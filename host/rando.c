@@ -1,5 +1,6 @@
 /* (Triforce) The item randomizer's generator. See rando.h. */
 #include "rando.h"
+#include "rando_logic.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -589,6 +590,68 @@ static void shuffle_all(Loc *locs, int nl, const Scene *sc, int nsc, const Rando
     }
 }
 
+/* ---- beatability -------------------------------------------------------------------------------------------------- */
+
+/* The game is beatable when the fifteen key items (kRlItems: the Bow, the Hookshot, the Mirror Shield and the like, every item the
+   game's logic asks for) can all be reached. Sphere by sphere: a chest opens once the items already found meet its class's
+   requirement (rando_logic.h, made from the OoT Randomizer's logic with no tricks), and the game is won once the held items meet
+   kRlGoal. A chest holding a key is held to the stricter list (no key of its dungeon). A chest of the remake that is not one of
+   the fifteen takes the requirement of the EASIEST chest of its dungeon (or of the overworld): the remake's chests are not matched
+   with the Randomizer's locations one by one (no id in common), so a key item in a chest deeper in its dungeon than that is not
+   known to be out of reach, and a seed that passes is very likely beatable, not proved. The key-item chests the shuffle leaves
+   alone (story ones: the Hookshot, the Boomerang...) count where they are. Returns 1 beatable, 0 not, -1 out of memory */
+static int req_met(const RlReq *r, uint32_t held) {
+    for (int i = 0; i < r->n; i++)
+        if ((held & r->m[i]) == r->m[i]) return 1;
+    return 0;
+}
+
+static int rl_item(const char *drop) {
+    for (int i = 0; i < 15; i++)
+        if (!strcmp(drop, kRlItems[i])) return i;
+    return -1;
+}
+
+static int rl_is_key(const char *drop) {
+    return starts_with(drop, "Item_Dungeon_") && (strstr(drop, "SmallKey") || strstr(drop, "BossKey"));
+}
+
+static int rl_class(const Loc *l, const Scene *sc) {
+    for (int i = 0; i < 15; i++)
+        if (l->hash == kRlHash[i]) return 13 + i;
+    for (int d = 0; d < 12; d++)
+        if (!strcmp(sc[l->scene].dir, kRlDirs[d])) return d;
+    return 12;
+}
+
+static int beatable(const Loc *locs, int nl, const Scene *sc) {
+    uint32_t held = 0, fixed = 0x7fff;   /* (a key-item chest the shuffle does not touch stays as it is: it holds its own item) */
+    char *open = (char *)calloc((size_t)(nl ? nl : 1), 1);
+    int *cls = (int *)malloc((size_t)(nl ? nl : 1) * sizeof *cls);
+    if (!open || !cls) { free(open); free(cls); return -1; }
+    for (int i = 0; i < nl; i++) {
+        cls[i] = rl_class(&locs[i], sc);
+        if (locs[i].leader == i && cls[i] >= 13) fixed &= ~(1u << (cls[i] - 13));
+    }
+    for (int again = 1; again;) {
+        again = 0;
+        for (int i = 0; i < 15; i++)
+            if ((fixed >> i & 1) && !(held >> i & 1) && req_met(&kRlAny[13 + i], held)) { held |= 1u << i; again = 1; }
+        for (int i = 0; i < nl; i++) {
+            if (open[i] || locs[i].leader != i) continue;
+            const RlReq *need = rl_is_key(locs[i].now) ? &kRlKey[cls[i]] : &kRlAny[cls[i]];
+            if (!req_met(need, held)) continue;
+            open[i] = 1;
+            again = 1;
+            const int b = rl_item(locs[i].now);
+            if (b >= 0) held |= 1u << b;
+        }
+    }
+    free(open);
+    free(cls);
+    return req_met(&kRlGoal, held);
+}
+
 /* ---- the scenes' warps ------------------------------------------------------------------------------------------- */
 
 /* A scene that plays when an item is found (a BFEVFL event flow: the Kokiri Sword's, Dm_Kokiri_0063) warps the player and Navi
@@ -767,13 +830,30 @@ int rando_generate(const char *romfs, const char *out_romfs, const char *spoiler
     if (!s->scenes)   /* (no event goes with an item: a moved item's own scene would warp the player to its old chest) */
         for (int i = 0; i < nl; i++) locs[i].carry[0] = 0;
     rng_state = (uint64_t)s->seed * 0x9e3779b97f4a7c15ull + 12345;
-    if (s->chests) shuffle_all(locs, nl, sc, nsc, s);
+    int tries = 0, checked = 0;
+    if (s->chests) {
+        for (;;) {   /* (a shuffle the game's logic says cannot be finished is dealt again) */
+            shuffle_all(locs, nl, sc, nsc, s);
+            tries++;
+            const int ok = beatable(locs, nl, sc);
+            if (ok < 0) break;
+            checked = 1;
+            if (ok) break;
+            if (tries >= 2000) { fail(err, errn, "no beatable shuffle found (try other settings)", NULL); goto done; }
+            for (int i = 0; i < nl; i++) {
+                snprintf(locs[i].now, sizeof locs[i].now, "%s", locs[i].drop);
+                snprintf(locs[i].now_ev, sizeof locs[i].now_ev, "%s", locs[i].event);
+                locs[i].placed = 0;
+            }
+        }
+    }
 
     int changed = 0;
     FILE *sp = NULL;
     if (spoiler_path) sp = fopen(spoiler_path, "w");
     if (sp) fprintf(sp, "Triforce randomizer\nseed %u\nshuffle chests %d, dungeon items %d\n%d chests found\n\n", s->seed,
                     s->chests, s->dungeon_items, nl);
+    if (sp && s->chests) fprintf(sp, checked ? "beatable by the logic: yes (shuffle %d)\n\n" : "beatable: not checked\n\n", tries);
     for (int a = 0; a < nsc; a++) {
         int here = 0;
         for (int i = 0; i < nl; i++) here += locs[i].scene == a && loc_changed(&locs[i]);

@@ -505,6 +505,78 @@ def main():
         lacking = any(any(x[2].startswith("Item_Dungeon_") for x in read_out(os.path.join(tmp, "o2%d%d" % (2, s))).get("KokiriForest/KokiriForest_Child_Dynamic", (b"", []))[1])
                       for s in (1, 2, 3, 4, 5, 6))
         check(lacking, "no seed with Anywhere put a dungeon item (a name its string table lacks) in the Kokiri scene")
+        # beatability: the game's fifteen key-item chests (found by hash) in a made-up scene. Every shuffle that is written can be finished by
+        # the header's own rules; a pool that lacks a key item cannot, and no shuffle is written
+        hdr = open(os.path.join(ROOT, "host", "rando_logic.h")).read()
+        items = re.findall(r'"(Item_[A-Za-z_]+)"', hdr.split("kRlItems")[1].split("};")[0])
+        hashes = [int(x) for x in re.findall(r"(\d+)ull", hdr)]
+        rows = re.findall(r"\{(\d), \{([^}]*)\}\}", hdr.split("kRlAny")[1].split("kRlKey")[0])
+        any_req = [[int(m, 16) for m in r[1].split(",") if m.strip()] for r in rows]
+        goal_req = [int(m, 16) for m in re.findall(r"\{\d, \{([^}]*)\}\}", hdr.split("kRlGoal")[1])[0].split(",") if m.strip()]
+        check(len(items) == 15 and len(hashes) == 15 and len(any_req) == 28 and goal_req, "rando_logic.h does not parse")
+
+        STORY = {"Item_Boomerang", "Item_Hookshot", "Item_Gauntlet_Silver", "Item_HeavyBoot", "Item_HoverBoot", "Item_Shield_Mirror", "Item_Arrow_Ice"}
+        JUNK = [9000 + i for i in range(40)]   # (the real game's story chests stay; the other chests of the overworld hold rupees)
+
+        def logic_romfs(root, pool):
+            acts = [actor("Obj_TBox_A_01", h, d, event=("Get_SubEvent_Story" if d in STORY else None)) for h, d in zip(hashes, pool)]
+            acts += [actor("Obj_TBox_A_01", h, "TBox_Rupee_Blue") for h in JUNK]
+            os.makedirs(os.path.join(root, "Pack"))
+            open(os.path.join(root, "Pack", "ZsDic.pack.zs"), "wb").write(zstandard.ZstdCompressor(level=3).compress(
+                sarc([("bcett.byml.zsdic", DICT_BYTES), ("pack.zsdic", b"x" * 64), ("zs.zsdic", ZS_DICT)])))
+            p = os.path.join(root, "Banc", "Logic", "Logic_Dynamic.bcett.byml.zs")
+            os.makedirs(os.path.dirname(p))
+            open(p, "wb").write(zstandard.ZstdCompressor(level=3, dict_data=zd).compress(byml_write({"Actors": acts})))
+
+        def reach(placed, junk):   # placed: key-item chest i -> item; junk: the items in the 40 overworld chests
+            held, opened = 0, set()
+            while True:
+                grew = False
+                for i in range(15):
+                    if i not in opened and any(held & m == m for m in any_req[13 + i]):
+                        opened.add(i)
+                        if placed[i] in items:
+                            held |= 1 << items.index(placed[i])
+                        grew = True
+                for j, it in enumerate(junk):
+                    if ("j", j) not in opened and any(held & m == m for m in any_req[12]):
+                        opened.add(("j", j))
+                        if it in items:
+                            held |= 1 << items.index(it)
+                        grew = True
+                if not grew:
+                    return any(held & m == m for m in goal_req)
+
+        def read_got(out):
+            raw = open(os.path.join(out, "Banc", "Logic", "Logic_Dynamic.bcett.byml.zs"), "rb").read()
+            return {a[1]: a[2] for a in byml_read_actors(dec.decompress(raw, max_output_size=1 << 24))}
+
+        for seed in (1, 2, 3):
+            root = os.path.join(tmp, "logic%d" % seed)
+            logic_romfs(root, items)
+            out = os.path.join(root, "out")
+            r = subprocess.run([exe, root, out, out + ".txt", "2", "1", str(seed), "0"], capture_output=True, text=True)
+            check(r.returncode == 0, "logic seed %d: %s" % (seed, r.stdout))
+            if r.returncode:
+                continue
+            check("beatable by the logic: yes" in open(out + ".txt").read(), "logic seed %d: the spoiler does not say the shuffle was checked" % seed)
+            got = read_got(out)
+            check(reach([got[h] for h in hashes], [got[h] for h in JUNK]), "logic seed %d: the written shuffle cannot be finished" % seed)
+            check(all(got[h] == d for h, d in zip(hashes, items) if d in STORY), "logic seed %d: a story chest changed" % seed)
+        root = os.path.join(tmp, "logic_missing")
+        logic_romfs(root, [("TBox_Rupee_Blue" if it == "Item_Range_Bow" else it) for it in items])
+        out = os.path.join(root, "out")
+        r = subprocess.run([exe, root, out, out + ".txt", "2", "1", "1", "0"], capture_output=True, text=True)
+        check(r.returncode != 0 and "no beatable" in r.stdout, "a pool without the Bow was written: %s" % r.stdout)
+        check(not os.path.exists(os.path.join(out, "Banc")), "a shuffle that cannot be finished was written")
+        check(reach(items, ["TBox_Rupee_Blue"] * 40), "the game's own placement cannot be finished by the rules")
+        check(not reach([items[0]] * 15, ["TBox_Rupee_Blue"] * 40), "a placement of one item alone can be finished")
+        # (the rules would refuse the Bow in its own dungeon's end chest... and a placement that holds the sword behind the Hookshot)
+        sw = items.index("Item_Sword_Kokiri")
+        bad = list(items)
+        bad[sw], bad[items.index("Item_Hookshot")] = bad[items.index("Item_Hookshot")], bad[sw]
+        check(not reach(bad, ["TBox_Rupee_Blue"] * 40), "the sword behind the Hookshot's chest can be finished")
+
         # clear
         subprocess.run([exe, "clear", a], check=True)
         check(not any(f.endswith(".zs") for _, _, fs in os.walk(a) for f in fs), "rando_clear left files")
