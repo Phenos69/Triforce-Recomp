@@ -2811,26 +2811,42 @@ void draw_tabs(ui::Ctx& c, int sel, bool game, bool hit) {
     if (game) entry[tabs++] = -1;
     for (int t = 0; t < TAB_DEBUG; t++) entry[tabs++] = t;
     if (debug_shown()) entry[tabs++] = TAB_DEBUG;
-    const float ty = ui::at(c, 0, 998).y, step = ui::lu(c, tabs > 7 ? 320 : tabs > 6 ? 350 : tabs > 5 ? 400 : 460), tpx = ui::lu(c, 54 * ui::kType);
-    const float tx0 = c.w * 0.5f - step * (tabs - 1) * 0.5f;
+    const float ty = ui::at(c, 0, 998).y, tpx = ui::lu(c, 54 * ui::kType);
+    const float step = ui::lu(c, tabs > 7 ? 320 : tabs > 6 ? 350 : tabs > 5 ? 400 : 460);
+    // (Triforce) each entry's centre and half width. Up to seven entries they are the pause menu's equal steps; with more the
+    // steps follow the names' widths (a long one, Randomizer, would touch its neighbours and overrun its plate at equal steps)
+    const auto name_of = [&](int tab) { return tab < 0 ? "Game" : tab == kModsTab ? "Mods" : ours[tab]; };
+    float cx[TAB_COUNT + 2], half[TAB_COUNT + 2];
+    if (tabs > 7) {
+        const float gap = ui::lu(c, 78);
+        float total = 0;
+        for (int i = 0; i < tabs; i++) half[i] = (ui::size_of(c.f.strong, tpx, name_of(entry[i])).x + gap) * 0.5f, total += half[i] * 2;
+        float x = c.w * 0.5f - total * 0.5f;
+        for (int i = 0; i < tabs; i++) cx[i] = x + half[i], x += half[i] * 2;
+    } else {
+        const float x0 = c.w * 0.5f - step * (tabs - 1) * 0.5f;
+        for (int i = 0; i < tabs; i++) cx[i] = x0 + i * step, half[i] = step * 0.5f;
+    }
+    const float tx_first = cx[0], tx_last = cx[tabs - 1];
     for (int i = 0; i < tabs; i++) {
         const int tab = entry[i];   // (-1: the game's own)
-        const float x = tx0 + i * step;
+        const float x = cx[i], hs = half[i];
         const bool shown = tab == sel;
         if (shown) {   // (the chosen category: the pause menu's own plate behind its name, MenuHeaderSelect: PaMenuCategory's
             // 540 x 260 pane, 34 units under the header's middle line, in the brown the pause menu's System tab has)
             const ImVec2 m = ui::at(c, 0, 966);
-            const float hw = std::min(ui::lu(c, 270), step * 0.5f + ui::lu(c, 40));
+            const float hw = std::min(ui::lu(c, 270), hs + ui::lu(c, 40));
             if (const ui::Art* t = ui::art("MenuHeaderSelect_00")) ui::image(c, t, ImVec2(x - hw, m.y - ui::lu(c, 130)), ImVec2(x + hw, m.y + ui::lu(c, 130)), ui::rgba(190, 125, 62));
-            else c.d->AddRectFilled(ImVec2(x - step * 0.5f, 0), ImVec2(x + step * 0.5f, hh + ui::lu(c, 6)), ui::kTabInset);
+            else c.d->AddRectFilled(ImVec2(x - hs, 0), ImVec2(x + hs, hh + ui::lu(c, 6)), ui::kTabInset);
         } else if (hit && tab >= 0 && tab == hover_tab) {
-            c.d->AddRectFilled(ImVec2(x - step * 0.5f + 4 * s, ty - ui::lu(c, 60)), ImVec2(x + step * 0.5f - 4 * s, ty + ui::lu(c, 60)), ui::rgba(60, 42, 22, 70), 6 * s);
+            c.d->AddRectFilled(ImVec2(x - hs + 4 * s, ty - ui::lu(c, 60)), ImVec2(x + hs - 4 * s, ty + ui::lu(c, 60)), ui::rgba(60, 42, 22, 70), 6 * s);
         }
-        ui::text_mid_centre(c, c.f.strong, tpx, x, ty, ui::kInk, tab < 0 ? "Game" : tab == kModsTab ? "Mods" : ours[tab]);
-        if (hit) hits.add(x - step * 0.5f, 0, x + step * 0.5f, hh, menu_hit::kTab, tab < 0 ? kGameTab : tab);
+        ui::text_mid_centre(c, c.f.strong, tpx, x, ty, ui::kInk, name_of(tab));
+        if (hit) hits.add(x - hs, 0, x + hs, hh, menu_hit::kTab, tab < 0 ? kGameTab : tab);
     }
     for (int i = 0; i < 2; i++) {   // (L and R at the tabs' ends, the game's icons: MenuOverlay_00's T_BtnL and T_BtnR, 90 units)
-        const float x = i ? tx0 + (tabs - 1) * step + ui::lu(c, 298) : tx0 - ui::lu(c, 298);
+        const float x = tabs > 7 ? (i ? tx_last + half[tabs - 1] + ui::lu(c, 100) : tx_first - half[0] - ui::lu(c, 100))   // (crowded: just outside the last names)
+                            : (i ? tx_last + ui::lu(c, 298) : tx_first - ui::lu(c, 298));
         if (c.pad && c.f.glyph) {
             const char* code = i ? ui::kIconR : ui::kIconL;
             const ImVec2 sz = ui::size_of(c.f.glyph, ui::lu(c, 90), code);
