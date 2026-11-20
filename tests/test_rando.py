@@ -224,10 +224,12 @@ SCENES = {
         actor("Obj_TBox_A_01", 42, "TBox_Rupee_Green"),
         actor("Obj_TBox_A_01", 43, "Obj_Heart_Piece"),
         actor("Obj_TBox_A_01", 44, "TBox_Rupee_Purple"),
+        actor("Obj_TBox_A_01", 45, "Item_Sword_001", "Get_StoneOfForest_GetSword"),   # (an item's own event: stays, or a rupee would play the sword's scene)
+        actor("Obj_TBox_A_01", 46, "TBox_Rupee_Red", "KokiriForest_TreasureBox_NaviChatOff"),   # (moves, keeps its event)
     ],
 }
 DUNGEONS = {"InsideTheDekuTree", "DodongoCavern", "InsideJabuJabuBelly"}
-STAYS = {17, 18}
+STAYS = {17, 18, 45}
 
 
 def make_romfs(root):
@@ -315,7 +317,9 @@ def main():
                         new = got[rel][1] if rel in got else acts
                         check(len(new) == len(acts), "%s: %s has another number of actors" % (tag, rel))
                         for a, b in zip(acts, new):
-                            check(a[:2] == b[:2] and a[3] == b[3], "%s: %s: an actor's name, hash or event changed" % (tag, rel))
+                            check(a[:2] == b[:2], "%s: %s: an actor's name or hash changed" % (tag, rel))
+                            gone = a[2] != b[2] and (a[3] or "").endswith(("_GetMap", "_GetCompass", "_GetBossKey", "_GetSmallKey", "_GetSlingShot"))
+                            check(b[3] == (None if gone else a[3]), "%s: %s: actor %s: event %s became %s (an item's get-item event goes with the item, the others stay)" % (tag, rel, a[1], a[3], b[3]))
                             if a[2] != b[2]:
                                 check(a[0].startswith("Obj_TBox") and a[1] not in STAYS, "%s: %s: actor %s changed and is no chest to shuffle" % (tag, rel, a[1]))
                                 moved_ever.add(a[1])

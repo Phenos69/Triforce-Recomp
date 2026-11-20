@@ -259,6 +259,8 @@ typedef struct {
     uint32_t dyn;
     uint64_t hash;
     char drop[72], gyaml[72], event[96];
+    int strip;       /* the chest's GetEventName goes when its item changes (see event_rule) */
+    int kdrop, kev;  /* the key indexes of Drop__DropActor and GetEventName in the scene's key table (kev -1: none) */
     char now[72];    /* what it gives after the shuffle */
     int placed;
 } Loc;
@@ -271,11 +273,30 @@ static int is_dungeon_item(const char *drop) {
     return starts_with(drop, "Item_Dungeon_");   /* SmallKey, BossKey, Map, Compass */
 }
 
-static int eligible(const Loc *l, int has_check) {
+/* What a chest's GetEventName allows. The event runs when the chest is opened whatever it holds: the Kokiri Sword's plays the
+   sword's cutscene and equips a sword that was never given (found in play), so a chest with an item's own event stays as it
+   is. The dungeon items' (Map, Compass, Boss Key) and the Slingshot's are only the get-item scene (the Slingshot's removal was
+   checked in play), and are dropped from a chest whose item changes. Navi's chat switch (the Kokiri Forest chests) is kept. Any
+   other event is a story scene (minigames, Ruto, the sages, the stones, Dampe's race): its chest stays as it is.
+   Returns 0 stays, 1 keeps the event, 2 drops it */
+static int event_rule(const char *e) {
+    if (!e[0] || strstr(e, "NaviChatOff")) return 1;
+    static const char *const kDrop[] = {"_GetMap", "_GetCompass", "_GetBossKey", "_GetSmallKey", "_GetSlingShot", NULL};
+    const size_t n = strlen(e);
+    for (int i = 0; kDrop[i]; i++) {
+        const size_t k = strlen(kDrop[i]);
+        if (n >= k && !strcmp(e + n - k, kDrop[i])) return 2;
+    }
+    return 0;
+}
+
+static int eligible(Loc *l, int has_check) {
     if (has_check || !l->drop[0]) return 0;
     if (!starts_with(l->gyaml, "Obj_TBox")) return 0;
     if (strstr(l->gyaml, "Pedestal") || strstr(l->gyaml, "Shop")) return 0;
-    if (strstr(l->event, "MiniGame") || strstr(l->event, "TreasureBoxWithRuto")) return 0;
+    const int rule = event_rule(l->event);
+    if (!rule) return 0;
+    l->strip = rule == 2;
     return 1;
 }
 
@@ -309,6 +330,8 @@ static int scan_scene(const Scene *S, int si, Loc **locs, int *n, int *cap) {
         if (!dict_find(b, dd, kDrop, &t, &v, &slot) || t != T_STR || v >= st_count(b, st)) continue;
         snprintf(l.drop, sizeof l.drop, "%s", st_str(b, st, v));
         l.slot = slot;
+        l.kdrop = kDrop;
+        l.kev = kEvent;
         l.dyn_slot = dyn_slot;
         l.dyn = dd;
         if (kEvent >= 0 && dict_find(b, dd, kEvent, &t, &v, NULL) && t == T_STR && v < st_count(b, st))
@@ -380,12 +403,22 @@ static int apply_scene(Scene *S, int si, Loc *locs, int n) {
         if (want[i] < 0) continue;
         /* the chest gets a Dynamic dictionary of its own (a copy at the end): the file may share one between actors, and a
            change in a shared one would change every actor that uses it */
-        const size_t len = 4 + (size_t)r24(b->d, locs[i].dyn + 1) * 8, at = (b->n + 3) & ~(size_t)3;
+        const uint32_t ne = r24(b->d, locs[i].dyn + 1);
+        const size_t len = 4 + (size_t)ne * 8, at = (b->n + 3) & ~(size_t)3;
         if (!buf_reserve(b, at + len + 8)) { free(want); free(extra); return -1; }
-        memcpy(b->d + at, b->d + locs[i].dyn, len);
-        b->n = at + len;
+        uint32_t kept = 0;
+        for (uint32_t e = 0; e < ne; e++) {
+            const size_t from = locs[i].dyn + 4 + (size_t)e * 8;
+            const int key = (int)r24(b->d, from);
+            if (locs[i].strip && locs[i].kev >= 0 && key == locs[i].kev) continue;   /* (the event goes) */
+            memcpy(b->d + at + 4 + (size_t)kept * 8, b->d + from, 8);
+            if (key == locs[i].kdrop) w32(b->d, at + 4 + (size_t)kept * 8 + 4, (uint32_t)want[i]);
+            kept++;
+        }
+        b->d[at] = b->d[locs[i].dyn];
+        b->d[at + 1] = (uint8_t)kept; b->d[at + 2] = (uint8_t)(kept >> 8); b->d[at + 3] = (uint8_t)(kept >> 16);
+        b->n = at + 4 + (size_t)kept * 8;
         w32(b->d, locs[i].dyn_slot, (uint32_t)at);
-        w32(b->d, at + (locs[i].slot - locs[i].dyn), (uint32_t)want[i]);
     }
     free(want);
     free(extra);
