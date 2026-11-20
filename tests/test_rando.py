@@ -404,6 +404,8 @@ def main():
                             check(a[:2] == b[:2], "%s: %s: an actor's name or hash changed" % (tag, rel))
                             same = a[2] == b[2] and a[3] == b[3]
                             check(same or b[3] is None or b[3] in CARRY, "%s: %s: actor %s: event %s became %s (only an item's own event is put on a chest)" % (tag, rel, a[1], a[3], b[3]))
+                            if b[3] in CARRY and not same:   # (an item's own scene is the big chest's: it goes to one, or stays where it was)
+                                check(b[0].startswith("Obj_TBox_A_02") or (a[2] == "Item_Sword_001" and a[3] == b[3]), "%s: %s: actor %s: a scene moved to a small chest (%s)" % (tag, rel, a[1], b[0]))
                             check((b[2] == "Item_Sword_001") == (b[3] == SWORD_EVENT), "%s: %s: actor %s holds %s with event %s (an item and its own event go together)" % (tag, rel, a[1], b[2], b[3]))
                             if a[2] != b[2]:
                                 check(a[0].startswith("Obj_TBox") and a[1] not in STAYS, "%s: %s: actor %s changed and is no chest to shuffle" % (tag, rel, a[1]))

@@ -522,10 +522,26 @@ static int dungeon_listed(const Scene *sc) {
     return 0;
 }
 
+static int big_chest(const Loc *l) { return starts_with(l->gyaml, "Obj_TBox_A_02"); }
+
 /* The items shuffled among the places, one each: items (the chests they are in now) and places have the same count. An item
    keeps the event that goes with it */
 static void deal(Loc *locs, const int *places, int *items, int n) {
     for (int i = n - 1; i > 0; i--) { const int j = (int)below((uint32_t)i + 1); const int t = items[i]; items[i] = items[j]; items[j] = t; }
+    /* An item's own scene (the swords, the Bow, the Hammer...) is the big chest's: it plays the big chest's opening and Link's pose
+       for it (Dm_SY_Treasurebox), which is wrong on a small chest. Such an item goes to a big chest (Obj_TBox_A_02, where these
+       scenes are in the game); if the pool has none it goes back to the chest it came from */
+    for (int i = 0; i < n; i++) {
+        if (!locs[items[i]].carry[0] || big_chest(&locs[places[i]])) continue;
+        int j = -1;
+        for (int k = 0, at = (int)below((uint32_t)n); k < n && j < 0; k++) {
+            const int c = (at + k) % n;
+            if (big_chest(&locs[places[c]]) && !locs[items[c]].carry[0]) j = c;
+        }
+        for (int k = 0; k < n && j < 0; k++)
+            if (places[k] == items[i]) j = k;   /* (its own chest) */
+        if (j >= 0) { const int t = items[i]; items[i] = items[j]; items[j] = t; }
+    }
     for (int i = 0; i < n; i++) {
         Loc *to = &locs[places[i]];
         const Loc *from = &locs[items[i]];
