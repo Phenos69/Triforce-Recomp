@@ -34,10 +34,20 @@ import subprocess
 import sys
 import tempfile
 
+import io
+
 import zstandard
+from evfl import EventFlow, Flowchart
+from evfl.actor import Actor
+from evfl.common import ActorIdentifier, StringHolder
+from evfl.container import Container
+from evfl.entry_point import EntryPoint
+from evfl.enums import Version
+from evfl.event import ActionEvent, Event
+from evfl.util import Index, RequiredIndex
 
 RUN_ALL_ARGS = ["--cc", "gcc"]
-RUN_ALL_MODULES = ["zstandard"]
+RUN_ALL_MODULES = ["zstandard", "evfl"]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
@@ -241,15 +251,74 @@ SWORD_EVENT = "Get_StoneOfForest_GetSword"
 CARRY = (SWORD_EVENT,)
 
 
+ZS_DICT = b"made-up dictionary of the event flows " * 40
+SCENE = "Dm_Kokiri_0063"
+
+
+def make_event_flow():
+    """A scene: warps of the player and Navi to a position (to go), one of the player to an actor (to stay), and waits of 520 and
+    2 frames (the shorter one's parameters go to the changed events)"""
+    flow = EventFlow()
+    flow.name = SCENE
+    flow.version = Version.V4
+    fc = Flowchart()
+    fc.name = SCENE
+    flow.flowchart = fc
+
+    def actor(name, actions):
+        a = Actor()
+        a.identifier = ActorIdentifier(name, "")
+        a.actions = [StringHolder(x) for x in actions]
+        a.concurrent_clips = 1
+        return a
+    player, navi, system = (actor("Player_Event", ["EventPlayerWarpToTargetPosAndRot", "EventPlayerWarpToTargetActor"]),
+                            actor("Npc_Navi", ["EventWarpToTargetPosAndRot"]), actor("EventSystemActor", ["EventWait"]))
+    fc.actors = [player, navi, system]
+    chain = []
+    for name, a, i, params in (("Event0", player, 0, {"Position": [1.0, 2.0, 3.0], "IsWaitEnd": True}),
+                               ("Event1", navi, 0, {"Position": [1.0, 2.0, 3.0], "IsWaitEnd": True}),
+                               ("Event2", player, 1, {"IsWaitEnd": True}),
+                               ("Event3", system, 0, {"Frames": 520, "IsWaitEnd": True}),
+                               ("Event4", system, 0, {"Frames": 2, "IsWaitEnd": True})):
+        e, d = Event(), ActionEvent()
+        e.name = name
+        d.actor, d.actor_action, d.nxt = RequiredIndex(), RequiredIndex(), Index()
+        d.actor.v, d.actor_action.v = a, a.actions[i]
+        d.params = Container()
+        d.params.data = params
+        e.data = d
+        chain.append((e, d))
+    for i, (e, d) in enumerate(chain):
+        d.nxt.v = chain[i + 1][0] if i + 1 < len(chain) else None
+    fc.events = [e for e, _ in chain]
+    ep = EntryPoint("C01")
+    ep.main_event = Index()
+    ep.main_event.v = chain[0][0]
+    fc.entry_points = [ep]
+    out = io.BytesIO()
+    assert flow.write(out)
+    return out.getvalue()
+
+
+def event_summary(b):
+    f = EventFlow()
+    f.read(b)
+    return [(e.name, e.data.actor.v.identifier.name, str(e.data.actor_action.v), dict(e.data.params.data)) for e in f.flowchart.events]
+
+
 def make_romfs(root):
     zd = zstandard.ZstdCompressionDict(DICT_BYTES, dict_type=zstandard.DICT_TYPE_RAWCONTENT)
     os.makedirs(os.path.join(root, "Pack"))
-    zs = zstandard.ZstdCompressor(level=3).compress(sarc([("bcett.byml.zsdic", DICT_BYTES), ("pack.zsdic", b"x" * 64)]))
+    zs = zstandard.ZstdCompressor(level=3).compress(sarc([("bcett.byml.zsdic", DICT_BYTES), ("pack.zsdic", b"x" * 64), ("zs.zsdic", ZS_DICT)]))
     open(os.path.join(root, "Pack", "ZsDic.pack.zs"), "wb").write(zs)
     for rel, actors in SCENES.items():
         p = os.path.join(root, "Banc", rel + ".bcett.byml.zs")
         os.makedirs(os.path.dirname(p), exist_ok=True)
         open(p, "wb").write(zstandard.ZstdCompressor(level=3, dict_data=zd).compress(byml_write({"Actors": actors})))
+    zz = zstandard.ZstdCompressionDict(ZS_DICT, dict_type=zstandard.DICT_TYPE_RAWCONTENT)
+    os.makedirs(os.path.join(root, "Event", "EventFlow"))
+    open(os.path.join(root, "Event", "EventFlow", SCENE + ".bfevfl.zs"), "wb").write(
+        zstandard.ZstdCompressor(level=3, dict_data=zz).compress(make_event_flow()))
     return zd
 
 
@@ -399,6 +468,29 @@ def main():
                             items_b[a[2]] += 1
                             items_a[b[2]] += 1
                 check(items_b == items_a, "%s: the chests hold other items than before" % tag)
+
+        # the scene's warps: with Item scenes Moved with item the warps to a position are waits of the file's shortest wait (the
+        # warp to an actor and every other event stay); Skipped, or no shuffle: the file is not written; rando_clear removes it
+        zz = zstandard.ZstdDecompressor(dict_data=zstandard.ZstdCompressionDict(ZS_DICT, dict_type=zstandard.DICT_TYPE_RAWCONTENT))
+        orig = event_summary(make_event_flow())
+        for chests, scenes, seed in ((2, 1, 3), (1, 1, 4), (2, 0, 3), (0, 1, 3)):
+            out = os.path.join(tmp, "ev%d%d" % (chests, scenes))
+            run(chests, 1, seed, out, scenes=scenes)
+            p = os.path.join(out, "Event", "EventFlow", SCENE + ".bfevfl.zs")
+            if not (chests and scenes):
+                check(not os.path.exists(p), "the scene was written with shuffle %d, scenes %d" % (chests, scenes))
+                continue
+            check(os.path.exists(p), "the scene was not written with shuffle %d, scenes %d" % (chests, scenes))
+            if not os.path.exists(p):
+                continue
+            raw = open(p, "rb").read()
+            check(raw[:5] == b"\x28\xb5\x2f\xfd\xa0", "the scene is not a frame of raw blocks")
+            new = event_summary(zz.decompress(raw, max_output_size=1 << 24))
+            wait2 = ("EventSystemActor", "EventWait", {"Frames": 2, "IsWaitEnd": True})
+            want = [orig[0][:1] + wait2, orig[1][:1] + wait2] + orig[2:]
+            check(new == want, "the scene's events are not as wanted: %s" % new)
+        subprocess.run([exe, "clear", os.path.join(tmp, "ev21")], check=True)
+        check(not os.path.exists(os.path.join(tmp, "ev21", "Event", "EventFlow", SCENE + ".bfevfl.zs")), "rando_clear left the scene")
 
         # the same seed twice gives the same bytes; 0 is a new seed, returned
         a, b = os.path.join(tmp, "same_a"), os.path.join(tmp, "same_b")

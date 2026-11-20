@@ -589,6 +589,118 @@ static void shuffle_all(Loc *locs, int nl, const Scene *sc, int nsc, const Rando
     }
 }
 
+/* ---- the scenes' warps ------------------------------------------------------------------------------------------- */
+
+/* A scene that plays when an item is found (a BFEVFL event flow: the Kokiri Sword's, Dm_Kokiri_0063) warps the player and Navi
+   to a fixed spot, the place it was made: the old chest's. Moved to another chest it would take the player there. Every action
+   that warps the player or Navi to a position (WarpToTargetPosAndRot) becomes an EventWait of the file's own (the event's actor
+   and action indexes and its parameters are changed: the parameters of the file's shortest wait), so the scene plays where the
+   player stands. Warps to an actor of the scene (the chest) are not touched. Returns the number changed, or -1 */
+static int evfl_name(const Buf *b, uint64_t p, char *out, size_t n) {
+    out[0] = 0;
+    if (!p || p > b->n || b->n - p < 2) return 0;
+    size_t len = r16(b->d, p);
+    if (p + 2 + len > b->n) return 0;
+    if (len >= n) len = n - 1;
+    memcpy(out, b->d + p + 2, len);
+    out[len] = 0;
+    return 1;
+}
+
+/* The "Frames" int of a params container (type 1: its names are the DIC's after the root, one item pointer each) */
+static int evfl_frames(const Buf *b, uint64_t c, int *frames) {
+    if (!c || c + 16 > b->n || b->d[c] != 1) return 0;
+    const uint32_t n = r16(b->d, c + 2);
+    const uint64_t dic = r64(b->d, c + 8);
+    if (!dic || dic + 8 + (uint64_t)(n + 1) * 16 > b->n || memcmp(b->d + dic, "DIC ", 4) || c + 16 + (uint64_t)n * 8 > b->n) return 0;
+    char nm[16];
+    for (uint32_t i = 0; i < n; i++) {
+        if (!evfl_name(b, r64(b->d, dic + 8 + (size_t)(i + 1) * 16 + 8), nm, sizeof nm) || strcmp(nm, "Frames")) continue;
+        const uint64_t item = r64(b->d, c + 16 + (size_t)i * 8);
+        if (!item || item + 20 > b->n || b->d[item] != 2) return 0;
+        *frames = (int)r32(b->d, item + 16);
+        return 1;
+    }
+    return 0;
+}
+
+static int evfl_neutralize_warps(Buf *b) {
+    if (b->n < 0x48 || memcmp(b->d, "BFEVFL\0\0", 8)) return -1;
+    const size_t esize = r16(b->d, 8) >= 0x400 ? 0x30 : 0x28;
+    const uint64_t fpo = r64(b->d, 0x28);
+    if (!fpo || fpo + 8 > b->n) return -1;
+    const uint64_t fc = r64(b->d, fpo);
+    if (!fc || fc + 0x48 > b->n || memcmp(b->d + fc, "EVFL", 4)) return -1;
+    const uint32_t na = r16(b->d, fc + 0x10), ne = r16(b->d, fc + 0x16);
+    const uint64_t actors = r64(b->d, fc + 0x28), events = r64(b->d, fc + 0x30);
+    if (!actors || !events || actors + (uint64_t)na * 0x38 > b->n || events + (uint64_t)ne * esize > b->n) return -1;
+    int wa = -1, wi = -1;   /* an actor with an EventWait action, and its index in the actor's actions */
+    char nm[96];
+    for (uint32_t a = 0; a < na && wa < 0; a++) {
+        const uint8_t *ar = b->d + actors + (size_t)a * 0x38;
+        const uint64_t acts = r64(ar, 0x18);
+        const uint32_t n = r16(ar, 0x30);
+        if (!acts || acts + (uint64_t)n * 8 > b->n) continue;
+        for (uint32_t j = 0; j < n; j++)
+            if (evfl_name(b, r64(b->d, acts + (size_t)j * 8), nm, sizeof nm) && !strcmp(nm, "EventWait")) { wa = (int)a; wi = (int)j; break; }
+    }
+    if (wa < 0) return 0;   /* (no wait to use: the file stays as it is) */
+    uint64_t wparams = 0;
+    int wframes = 0;
+    for (uint32_t e = 0; e < ne; e++) {
+        const uint8_t *ev = b->d + events + (size_t)e * esize;
+        int f;
+        if (ev[8] != 0 || (int)r16(ev, 12) != wa || (int)r16(ev, 14) != wi || !evfl_frames(b, r64(ev, 16), &f) || f < 0) continue;
+        if (!wparams || f < wframes) { wparams = r64(ev, 16); wframes = f; }
+    }
+    int changed = 0;
+    for (uint32_t e = 0; e < ne; e++) {
+        uint8_t *ev = b->d + events + (size_t)e * esize;
+        if (ev[8] != 0) continue;   /* (an action event) */
+        const uint32_t ai = r16(ev, 12), ac = r16(ev, 14);
+        if (ai >= na || (int)ai == wa) continue;
+        const uint8_t *ar = b->d + actors + (size_t)ai * 0x38;
+        if (!evfl_name(b, r64(ar, 0), nm, sizeof nm) || (strcmp(nm, "Player_Event") && strcmp(nm, "Npc_Navi"))) continue;
+        const uint64_t acts = r64(ar, 0x18);
+        if (!acts || ac >= r16(ar, 0x30) || acts + (uint64_t)(ac + 1) * 8 > b->n) continue;
+        if (!evfl_name(b, r64(b->d, acts + (size_t)ac * 8), nm, sizeof nm) || !strstr(nm, "WarpToTargetPosAndRot")) continue;
+        ev[12] = (uint8_t)wa; ev[13] = (uint8_t)(wa >> 8);
+        ev[14] = (uint8_t)wi; ev[15] = (uint8_t)(wi >> 8);
+        if (wparams) for (int k = 0; k < 8; k++) ev[16 + k] = (uint8_t)(wparams >> (8 * k));
+        changed++;
+    }
+    return changed;
+}
+
+/* The scenes of the items that go with them (under <romfs>/Event/EventFlow), written without the warps */
+static const char *const kScenes[] = {"Dm_Kokiri_0063", NULL};
+
+static int patch_scenes(const char *romfs, const char *out_romfs, const Buf *dict, FILE *sp) {
+    int n = 0;
+    for (int i = 0; kScenes[i]; i++) {
+        char path[1024];
+        Buf tmp = {0}, ev = {0};
+        snprintf(path, sizeof path, "%s/Event/EventFlow/%s.bfevfl.zs", romfs, kScenes[i]);
+        if (!read_file(path, &tmp) || !unzstd(tmp.d, tmp.n, dict->d, dict->n, &ev)) { free(tmp.d); free(ev.d); continue; }
+        const int c = evfl_neutralize_warps(&ev);
+        if (c > 0) {
+            size_t zn = 0;
+            uint8_t *z = zstd_raw_frame(ev.d, ev.n, &zn);
+            snprintf(path, sizeof path, "%s/Event/EventFlow", out_romfs);
+            mkdir_p(path);
+            snprintf(path, sizeof path, "%s/Event/EventFlow/%s.bfevfl.zs", out_romfs, kScenes[i]);
+            if (z && write_file(path, z, zn)) {
+                n++;
+                if (sp) fprintf(sp, "scene %s: %d warps to a fixed place removed\n", kScenes[i], c);
+            }
+            free(z);
+        }
+        free(tmp.d);
+        free(ev.d);
+    }
+    return n;
+}
+
 /* ---- the run ------------------------------------------------------------------------------------------------------ */
 
 int rando_generate(const char *romfs, const char *out_romfs, const char *spoiler_path, RandoSettings *s, char *err,
@@ -678,6 +790,11 @@ int rando_generate(const char *romfs, const char *out_romfs, const char *spoiler
         if (!ok) { fail(err, errn, "cannot write", path); if (sp) fclose(sp); goto done; }
         changed += here;
     }
+    if (s->scenes && s->chests) {   /* (the scenes that go with the items play where the player is) */
+        Buf zd = {0};
+        size_t zat = 0, zlen = 0;
+        if (sarc_find(&pack, "zs.zsdic", &zat, &zlen)) { zd.d = pack.d + zat; zd.n = zlen; patch_scenes(romfs, out_romfs, &zd, sp); }
+    }
     if (sp) {
         for (int i = 0; i < nl; i++)
             if (loc_changed(&locs[i])) {
@@ -715,4 +832,8 @@ void rando_clear(const char *out_romfs) {
         free_list(files, nf);
     }
     free_list(dirs, nd);
+    for (int i = 0; kScenes[i]; i++) {
+        snprintf(path, sizeof path, "%s/Event/EventFlow/%s.bfevfl.zs", out_romfs, kScenes[i]);
+        remove(path);
+    }
 }
