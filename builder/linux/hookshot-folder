@@ -1,0 +1,46 @@
+#!/bin/sh
+# The game folder's launcher, what Triforce.exe is on Windows: Play, and Update when a newer release is out.
+# The game itself is bin/triforce. This file is copied to triforce in the folder (nx2/make_game.py).
+#
+# It starts the builder installed by an update ($XDG_DATA_HOME/triforce/builder), or the builder= line in
+# triforce_version.txt (the AppImage that built the folder; hookshot_version.txt in a folder that still has that). With neither, it starts the game.
+set -eu
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+installed() {
+    root=${HOOKSHOT_BUILDER_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}}/triforce/builder
+    [ -f "$root/current" ] || return 1
+    tag=$(tr -d ' \r\n' < "$root/current")
+    [ -n "$tag" ] && [ -x "$root/versions/$tag/AppRun" ] || return 1
+    printf '%s\n' "$root/versions/$tag/AppRun"
+}
+
+builder_line() {
+    file=$HERE/triforce_version.txt
+    [ -f "$file" ] || file=$HERE/hookshot_version.txt
+    [ -f "$file" ] || return 1
+    path=
+    while IFS= read -r line || [ -n "$line" ]; do
+        case $line in
+            builder=*) path=${line#builder=} ;;
+        esac
+    done < "$file"
+    [ -n "$path" ] && [ -x "$path" ] || return 1
+    printf '%s\n' "$path"
+}
+
+run=$(installed || true)
+if [ -z "$run" ]; then
+    run=$(builder_line || true)
+fi
+if [ -n "$run" ]; then
+    exec "$run" --launch "$HERE"
+fi
+for game in bin/triforce bin/hookshot; do
+    if [ -x "$HERE/$game" ]; then
+        cd "$HERE"
+        exec "./$game"
+    fi
+done
+echo "Triforce: the game (bin/triforce) is missing from this folder. Build it again with Triforce Builder." >&2
+exit 1
