@@ -306,8 +306,10 @@ static void mods_scan(void) {
 /* hos_main.c, once the image is loaded (image_path: not used; exefs patches are applied when the game is built) */
 void hos_mods_init(const char *image_path) {
     void hos_mod_cheats_ready(void);
+    void hos_rando_prepare(void);   /* rando_host.c: the randomizer's scenes, as a mod folder, before the mods are indexed */
     (void)image_path;
     code_record_load();
+    hos_rando_prepare();
     mods_scan();
     code_patches_gone();
     hos_mod_cheats_ready();   /* (mod_cheats.c: every mod's cheat file is read) */

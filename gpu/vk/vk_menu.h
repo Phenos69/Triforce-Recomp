@@ -125,6 +125,11 @@ struct Options {
     int vram_mb = 0;      // dynamic texture cache budget limit in MB
     int mirror_mb = 0;    // staging mirror limit in MB
     int audio_output = 0; // (hookshot) the speakers the game mixes for: 0 Auto (the default output's), 1 Stereo, 2 5.1; read once, at the start (host/nn_audio.c; HOS_AUDIO_CHANNELS)
+    // (Triforce) The Randomizer tab (host/rando_host.c reads these from triforce_options.ini at the start, host/rando.c does the work)
+    int randomizer = 0;           // the item randomizer: 0 Off, 1 On (the chests' contents shuffled from the seed, at each start)
+    int randomizer_seed = 0;      // the seed: 0 a new one each start, 1 to 999999 that seed (triforce_randomizer.txt says which was used)
+    int shuffle_chests = 2;       // 0 Off, 1 Within each scene, 2 Everywhere (rando.h RandoSettings::chests)
+    int dungeon_items = 1;        // maps, compasses and keys: 0 Vanilla, 1 Own dungeon, 2 Anywhere (rando.h RandoSettings::dungeon_items)
     int volume = 100;  // (Triforce) Master volume, percent of the game's own (host/nn_audio.c render_frame; master_volume= in the ini)
     int menu_sounds = 80;   // (Triforce) Menu sounds: how loud the options' own sounds are, the game's interface sounds, percent,
                             // 0 silent; 80 as NX2navi's menu_sound_volume (host/menu_sound.c; menu_sounds= in the ini)

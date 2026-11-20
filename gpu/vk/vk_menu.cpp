@@ -108,8 +108,9 @@ enum MenuTab {
     TAB_AUDIO = 2,
     TAB_CONTROLS = 3,
     TAB_SYSTEM = 4,
-    TAB_DEBUG = 5,   // (the OoT debug tools of #785 and the developer's rows, a tab of their own)
-    TAB_COUNT = 6,
+    TAB_RANDOMIZER = 5,   // ((Triforce) the item randomizer's settings, before Debug: tabs_shown and draw_tabs take Debug as the last)
+    TAB_DEBUG = 6,   // (the OoT debug tools of #785 and the developer's rows, a tab of their own)
+    TAB_COUNT = 7,
     TAB_MOTION = TAB_COUNT,   // (hookshot: not a tab of the strip, the Motion page that the Controls tab's Motion row
                               // opens: one past the strip's tabs, so a tab added before TAB_COUNT moves it along)
     TAB_PAGE = TAB_MOTION + 1   // (hookshot: the Controls page's rows, above its grid; no tab shows them)
@@ -723,6 +724,21 @@ const char* tx_audio_output(int v) {
     static const char* t[] = {"Auto", "Stereo", "5.1"};
     return (unsigned)v < 3 ? t[v] : t[0];
 }
+// ((Triforce) the Randomizer tab's rows: host/rando_host.c reads them from the file at the start)
+const char* tx_rando_seed(int v) {
+    static char b[12];
+    if (v <= 0) return "Random";
+    snprintf(b, sizeof b, "%d", v);
+    return b;
+}
+const char* tx_rando_chests(int v) {
+    static const char* t[] = {"Off", "Within each scene", "Everywhere"};
+    return t[v < 0 ? 0 : v > 2 ? 2 : v];
+}
+const char* tx_rando_dungeon_items(int v) {
+    static const char* t[] = {"Vanilla", "Own dungeon", "Anywhere"};
+    return t[v < 0 ? 0 : v > 2 ? 2 : v];
+}
 // (hookshot) the motion's deadzone: the console's three zero-drift modes, the rate under which the pad counts as still
 const char* tx_deadzone(int v) {
     static const char* t[] = {"Low", "Standard", "High"};
@@ -1289,6 +1305,22 @@ Row rows[] = {
     {TAB_PAGE, "Button prompts", &opts.prompts, 0, HOS_PROMPT_N, 1, tx_prompts,
      "The button icons the game shows, in its texts and menus: those of this controller, or the keyboard's and the "
      "mouse's, for the buttons or keys your controls put each action on.", hn_prompts, true, true},
+    // Randomizer (Triforce): the chests' contents shuffled from a seed. host/rando.c writes the changed scenes from your own game
+    // files into the mods folder at each start; no logic yet, so a seed can need an item that is out of reach
+    {TAB_RANDOMIZER, "Randomizer", &opts.randomizer, 0, 1, 1, tx_onoff,
+     "Shuffles what the chests give. At each start the changed scenes are made from your own game files into the mods folder "
+     "(zz-Randomizer (generated)); Off removes them. There is no logic yet: a seed can put an item you need out of reach. "
+     "Applies after a restart.", nullptr, true, true},
+    {TAB_RANDOMIZER, "Randomizer seed", &opts.randomizer_seed, 0, 999999, 1, tx_rando_seed,
+     "Random is a new seed at each start. A number plays that seed again, the same on every PC. The seed that ran is the top "
+     "of triforce_randomizer.txt beside the game, with where every item went. Applies after a restart.", nullptr, true, true},
+    {TAB_RANDOMIZER, "Shuffle chests", &opts.shuffle_chests, 0, 2, 1, tx_rando_chests,
+     "Where the chests' items can go: Within each scene keeps every scene's chests to its own items, Everywhere mixes them "
+     "all. Off changes nothing. Applies after a restart.", nullptr, true, true},
+    {TAB_RANDOMIZER, "Dungeon items", &opts.dungeon_items, 0, 2, 1, tx_rando_dungeon_items,
+     "Maps, compasses and small and boss keys. Vanilla leaves them where they are; Own dungeon moves them to other chests "
+     "of the same dungeon; Anywhere lets them go to any chest (within a scene it is Own dungeon). Applies after a restart.",
+     nullptr, true, true},
     // Debug: the tools' switch, the tools themselves below it while they are on (cheat: menu_tick does what they do), then the
     // developer's rows
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
@@ -2771,7 +2803,7 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
 /// with more than five). sel: the one shown, -1 the game's own. game: "Game" in front of ours, inside the game's Options
 /// screen. hit: the mouse's places noted
 void draw_tabs(ui::Ctx& c, int sel, bool game, bool hit) {
-    static const char* const ours[TAB_COUNT] = {"Display", "Graphics", "Audio", "Controls", "System", "Debug"};
+    static const char* const ours[TAB_COUNT] = {"Display", "Graphics", "Audio", "Controls", "System", "Randomizer", "Debug"};
     const float s = c.s, hh = banner_h(c);
     // (Triforce) the strip's entries in their order: the game's own (-1), ours to System, Debug when shown (Mods is not one:
     // it is an entry of its own under the game's System list and the title's, kModsRowPage)
