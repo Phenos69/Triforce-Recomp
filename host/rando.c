@@ -652,6 +652,8 @@ int rando_generate(const char *romfs, const char *out_romfs, const char *spoiler
             if (locs[j].leader == j && locs[j].hash == locs[i].hash && !strcmp(sc[locs[j].scene].dir, sc[locs[i].scene].dir) &&
                 !strcmp(locs[j].drop, locs[i].drop) && !strcmp(locs[j].event, locs[i].event)) { locs[i].leader = j; break; }
     }
+    if (!s->scenes)   /* (no event goes with an item: a moved item's own scene would warp the player to its old chest) */
+        for (int i = 0; i < nl; i++) locs[i].carry[0] = 0;
     rng_state = (uint64_t)s->seed * 0x9e3779b97f4a7c15ull + 12345;
     if (s->chests) shuffle_all(locs, nl, sc, nsc, s);
 

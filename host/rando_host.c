@@ -1,5 +1,5 @@
 /* (Triforce) The item randomizer at the game's start: the Randomizer tab's rows (gpu/vk/vk_menu.cpp) are kept in
-   triforce_options.ini (randomizer, randomizer_seed, shuffle_chests, dungeon_items), read here as host/nn_audio.c reads its
+   triforce_options.ini (randomizer, randomizer_seed, shuffle_chests, dungeon_items, item_scenes), read here as host/nn_audio.c reads its
    row. With the randomizer on, host/rando.c writes the changed scenes from the game's RomFS into a mod folder of the mods
    folder, "zz-Randomizer (generated)" (the last in the order, so its files win), which mods.c then indexes like any other
    mod; with it off the generated files are removed. The list of what went where is triforce_randomizer.txt beside the game. */
@@ -32,7 +32,7 @@ void hos_rando_prepare(void) {
     snprintf(spoiler, sizeof spoiler, "%striforce_randomizer.txt", dir);
 
     int on = 0;
-    RandoSettings s = {2, 1, 0};   /* (the rows' defaults, vk_menu.h Options: Everywhere, Own dungeon, a new seed each start) */
+    RandoSettings s = {2, 1, 0, 0};   /* (the rows' defaults, vk_menu.h Options: Everywhere, Own dungeon, a new seed each start, scenes skipped) */
     FILE *f = fopen(ini, "r");
     if (f) {
         char line[96];
@@ -41,6 +41,7 @@ void hos_rando_prepare(void) {
             else if (!strncmp(line, "randomizer_seed=", 16)) s.seed = (uint32_t)atoi(line + 16);
             else if (!strncmp(line, "shuffle_chests=", 15)) s.chests = atoi(line + 15);
             else if (!strncmp(line, "dungeon_items=", 14)) s.dungeon_items = atoi(line + 14);
+            else if (!strncmp(line, "item_scenes=", 12)) s.scenes = atoi(line + 12) == 1;
         }
         fclose(f);
     }
@@ -60,6 +61,6 @@ void hos_rando_prepare(void) {
     rando_clear(out);   /* (a scene this seed leaves alone must not keep an earlier seed's change) */
     const int n = rando_generate(hos_romfs_dir, out, spoiler, &s, err, sizeof err);
     if (n < 0) hos_log("randomizer: not generated: %s", err);
-    else hos_log("randomizer: seed %u, shuffle chests %d, dungeon items %d: %d chests changed (%s)", s.seed, s.chests,
-                 s.dungeon_items, n, "triforce_randomizer.txt");
+    else hos_log("randomizer: seed %u, shuffle chests %d, dungeon items %d, item scenes %d: %d chests changed (%s)", s.seed, s.chests,
+                 s.dungeon_items, s.scenes, n, "triforce_randomizer.txt");
 }

@@ -735,6 +735,10 @@ const char* tx_rando_chests(int v) {
     static const char* t[] = {"Off", "Within each scene", "Everywhere"};
     return t[v < 0 ? 0 : v > 2 ? 2 : v];
 }
+const char* tx_rando_scenes(int v) {
+    static const char* t[] = {"Skipped", "Moved with item"};
+    return t[v < 0 ? 0 : v > 1 ? 1 : v];
+}
 const char* tx_rando_dungeon_items(int v) {
     static const char* t[] = {"Vanilla", "Own dungeon", "Anywhere"};
     return t[v < 0 ? 0 : v > 2 ? 2 : v];
@@ -1321,6 +1325,10 @@ Row rows[] = {
      "Maps, compasses and small and boss keys. Vanilla leaves them where they are; Own dungeon moves them to other chests "
      "of the same dungeon; Anywhere lets them go to any chest (within a scene it is Own dungeon). Applies after a restart.",
      nullptr, true, true},
+    {TAB_RANDOMIZER, "Item scenes", &opts.item_scenes, 0, 1, 1, tx_rando_scenes,
+     "The scenes that play when some items are found (the swords, the Bow, the Hammer, the Gauntlets, the Lens of Truth). "
+     "Skipped: the chest just gives its item. Moved with item: the item brings its scene, which can warp you to the place "
+     "where the scene was made. Applies after a restart.", nullptr, true, true},
     // Debug: the tools' switch, the tools themselves below it while they are on (cheat: menu_tick does what they do), then the
     // developer's rows
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,

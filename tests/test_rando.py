@@ -260,7 +260,7 @@ DRIVER = r"""
 #include <string.h>
 int main(int argc, char **argv) {
     if (argc == 3 && !strcmp(argv[1], "clear")) { rando_clear(argv[2]); return 0; }
-    RandoSettings s = {atoi(argv[4]), atoi(argv[5]), (uint32_t)atoi(argv[6])};
+    RandoSettings s = {atoi(argv[4]), atoi(argv[5]), (uint32_t)atoi(argv[6]), argc > 7 ? atoi(argv[7]) : 1};
     char err[256] = "";
     int n = rando_generate(argv[1], argv[2], argv[3], &s, err, sizeof err);
     printf("%d %u %s\n", n, s.seed, err);
@@ -291,9 +291,9 @@ def main():
         dec = zstandard.ZstdDecompressor(dict_data=zd)
         before = {rel: byml_read_actors(byml_write({"Actors": a})) for rel, a in SCENES.items()}
 
-        def run(chests, di, seed, out):
+        def run(chests, di, seed, out, scenes=1):
             shutil.rmtree(out, ignore_errors=True)
-            r = subprocess.run([exe, romfs, out, os.path.join(out + ".txt"), str(chests), str(di), str(seed)], capture_output=True, text=True)
+            r = subprocess.run([exe, romfs, out, os.path.join(out + ".txt"), str(chests), str(di), str(seed), str(scenes)], capture_output=True, text=True)
             check(r.returncode == 0, "rando_generate fails for chests %d, dungeon items %d, seed %d: %s" % (chests, di, seed, r.stdout))
             return r.stdout.split()
 
@@ -381,6 +381,24 @@ def main():
                 break
         check(sword_in_jabu, "no seed put the sword (with its event) in a scene whose key table lacks GetEventName")
         check(moved_ever >= {13, 14, 41, 42}, "no seed moved the chests that share a dictionary / a scene without dungeon items")
+
+        # Item scenes Skipped: no event goes with an item, and a chest whose item changed has none (the sword's scene would warp the
+        # player to its old chest); the items are the same as with the scenes moved
+        for chests in (1, 2):
+            for seed in (1, 2, 3, 4, 5, 6):
+                out = os.path.join(tmp, "s%d%d" % (chests, seed))
+                run(chests, 1, seed, out, scenes=0)
+                got = read_out(out)
+                tag = "scenes skipped, chests %d, seed %d" % (chests, seed)
+                items_b, items_a = collections.Counter(), collections.Counter()
+                for rel, acts in before.items():
+                    new = got[rel][1] if rel in got else acts
+                    for a, b in zip(acts, new):
+                        check(a[2] == b[2] and a[3] == b[3] or b[3] is None, "%s: %s: actor %s: its item changed (%s, %s) and its event is %s" % (tag, rel, a[1], a[2], b[2], b[3]))
+                        if a[0].startswith("Obj_TBox") and a[1] not in STAYS and "_Adult_" not in rel:
+                            items_b[a[2]] += 1
+                            items_a[b[2]] += 1
+                check(items_b == items_a, "%s: the chests hold other items than before" % tag)
 
         # the same seed twice gives the same bytes; 0 is a new seed, returned
         a, b = os.path.join(tmp, "same_a"), os.path.join(tmp, "same_b")

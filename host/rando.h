@@ -20,6 +20,9 @@ typedef struct {
     int dungeon_items;  /* Dungeon items (maps, compasses, small keys, boss keys): 0 Vanilla, 1 Own dungeon, 2 Anywhere
                            (Anywhere is Own dungeon while chests is 1: a scene's chests keep their count) */
     uint32_t seed;      /* 0: a new one each time (rando_generate puts the one it used here) */
+    int scenes;         /* Item scenes: 0 Skipped (a chest gives its item and nothing else happens), 1 Moved with item (the
+                           scene of a sword, the Bow, the Hammer and the like goes to the chest that holds the item; it can
+                           warp the player to where the scene was made) */
 } RandoSettings;
 
 /* Reads <romfs>/Pack/ZsDic.pack.zs and <romfs>/Banc/<scene>/ (the .bcett.byml.zs files), writes the scenes it changed under
