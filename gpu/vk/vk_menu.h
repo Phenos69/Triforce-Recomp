@@ -130,7 +130,7 @@ struct Options {
     int randomizer_seed = 0;      // the seed: 0 a new one each start, 1 to 999999 that seed (triforce_randomizer.txt says which was used)
     int shuffle_chests = 2;       // 0 Off, 1 Within each scene, 2 Everywhere (rando.h RandoSettings::chests)
     int dungeon_items = 1;        // maps, compasses and keys: 0 Vanilla, 1 Own dungeon, 2 Anywhere (rando.h RandoSettings::dungeon_items)
-    int item_scenes = 0;          // an item's own scene (sword, Bow, Hammer...): 0 Skipped, 1 Moved with item (rando.h RandoSettings::scenes)
+    int item_scenes = 1;          // an item's own scene (sword, Bow, Hammer...): 0 Skipped, 1 Moved with item, the default (rando.h RandoSettings::scenes)
     int volume = 100;  // (Triforce) Master volume, percent of the game's own (host/nn_audio.c render_frame; master_volume= in the ini)
     int menu_sounds = 80;   // (Triforce) Menu sounds: how loud the options' own sounds are, the game's interface sounds, percent,
                             // 0 silent; 80 as NX2navi's menu_sound_volume (host/menu_sound.c; menu_sounds= in the ini)

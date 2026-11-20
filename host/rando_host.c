@@ -32,7 +32,7 @@ void hos_rando_prepare(void) {
     snprintf(spoiler, sizeof spoiler, "%striforce_randomizer.txt", dir);
 
     int on = 0;
-    RandoSettings s = {2, 1, 0, 0};   /* (the rows' defaults, vk_menu.h Options: Everywhere, Own dungeon, a new seed each start, scenes skipped) */
+    RandoSettings s = {2, 1, 0, 1};   /* (the rows' defaults, vk_menu.h Options: Everywhere, Own dungeon, a new seed each start, scenes moved with their items) */
     FILE *f = fopen(ini, "r");
     if (f) {
         char line[96];
