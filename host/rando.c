@@ -254,15 +254,15 @@ typedef struct {
 
 typedef struct {
     int scene;
-    size_t slot;     /* where the chest's Drop__DropActor string index is, in the scene's bytes */
     size_t dyn_slot; /* where the actor's Dynamic dictionary's offset is, and that dictionary: BYML shares equal ones */
     uint32_t dyn;
     uint64_t hash;
     char drop[72], gyaml[72], event[96];
-    int strip;       /* the chest's GetEventName goes when its item changes (see event_rule) */
-    int kdrop, kev;  /* the key indexes of Drop__DropActor and GetEventName in the scene's key table (kev -1: none) */
+    char carry[96];  /* the event that goes with this chest's item when it is moved (empty: none goes) */
     char now[72];    /* what it gives after the shuffle */
+    char now_ev[96]; /* and the event it has after it */
     int placed;
+    int leader;      /* the same chest in the scene's other age file (same folder and hash): this index, else itself */
 } Loc;
 
 static const char *const kDungeons[] = {"BottomOfTheWell", "DodongoCavern", "FireTemple", "ForestTemple", "GerudoTrainingGround",
@@ -273,20 +273,26 @@ static int is_dungeon_item(const char *drop) {
     return starts_with(drop, "Item_Dungeon_");   /* SmallKey, BossKey, Map, Compass */
 }
 
-/* What a chest's GetEventName allows. The event runs when the chest is opened whatever it holds: the Kokiri Sword's plays the
-   sword's cutscene and equips a sword that was never given (found in play), so a chest with an item's own event stays as it
-   is. The dungeon items' (Map, Compass, Boss Key) and the Slingshot's are only the get-item scene (the Slingshot's removal was
-   checked in play), and are dropped from a chest whose item changes. Navi's chat switch (the Kokiri Forest chests) is kept. Any
-   other event is a story scene (minigames, Ruto, the sages, the stones, Dampe's race): its chest stays as it is.
-   Returns 0 stays, 1 keeps the event, 2 drops it */
+/* What a chest's GetEventName means. The event runs when the chest is opened whatever it holds: the Kokiri Sword chest's played
+   the sword's scene and equipped a sword that was never given (found in play). So an item's own event (the swords, the Bomb Bag,
+   the Bow, the Hammer, the Gauntlets, the Lens of Truth: kCarry) goes with the item to the chest that gets it, and a chest has
+   only the event of the item it holds. The get-item scenes of the dungeon items and of the Slingshot, and Navi's chat switch
+   (kPlain), are not tied to anything: they are dropped when the chest's item changes. Any other event is a story scene
+   (minigames, Ruto, the sages, Dampe's race, the stones): its chest stays as it is. Returns 0 stays, 1 plain, 2 carried */
+static int has_suffix(const char *e, const char *suffix) {
+    const size_t n = strlen(e), k = strlen(suffix);
+    return n >= k && !strcmp(e + n - k, suffix);
+}
+
 static int event_rule(const char *e) {
-    if (!e[0] || strstr(e, "NaviChatOff")) return 1;
-    static const char *const kDrop[] = {"_GetMap", "_GetCompass", "_GetBossKey", "_GetSmallKey", "_GetSlingShot", NULL};
-    const size_t n = strlen(e);
-    for (int i = 0; kDrop[i]; i++) {
-        const size_t k = strlen(kDrop[i]);
-        if (n >= k && !strcmp(e + n - k, kDrop[i])) return 2;
-    }
+    static const char *const kPlain[] = {"_GetMap", "_GetCompass", "_GetBossKey", "_GetSmallKey", "_GetSlingShot", "NaviChatOff", NULL};
+    static const char *const kCarry[] = {"GetSword", "GetBombBag", "GetBow", "GetHammer", "Get_Gauntlet", "GetGlassTruth", NULL};
+    if (!e[0]) return 1;
+    if (strstr(e, "Sage") || strstr(e, "SubEvent") || strstr(e, "MiniGame") || strstr(e, "Ruto")) return 0;
+    for (int i = 0; kPlain[i]; i++)
+        if (has_suffix(e, kPlain[i])) return 1;
+    for (int i = 0; kCarry[i]; i++)
+        if (strstr(e, kCarry[i])) return 2;
     return 0;
 }
 
@@ -296,7 +302,7 @@ static int eligible(Loc *l, int has_check) {
     if (strstr(l->gyaml, "Pedestal") || strstr(l->gyaml, "Shop")) return 0;
     const int rule = event_rule(l->event);
     if (!rule) return 0;
-    l->strip = rule == 2;
+    if (rule == 2) snprintf(l->carry, sizeof l->carry, "%s", l->event);
     return 1;
 }
 
@@ -312,7 +318,6 @@ static int scan_scene(const Scene *S, int si, Loc **locs, int *n, int *cap) {
     if (kActors < 0 || kGyaml < 0 || kDyn < 0 || kDrop < 0) return 0;
     uint8_t t;
     uint32_t arr, d, dd, v;
-    size_t slot;
     if (!dict_find(b, root, kActors, &t, &arr, NULL) || t != T_ARR || !in_bounds(b, arr, 4)) return 0;
     const uint32_t cnt = r24(b->d, arr + 1), vals = (arr + 4 + cnt + 3) & ~3u;
     if (!in_bounds(b, arr, (size_t)vals - arr + (size_t)cnt * 4)) return 0;
@@ -327,11 +332,8 @@ static int scan_scene(const Scene *S, int si, Loc **locs, int *n, int *cap) {
         if (!starts_with(l.gyaml, "Obj_TBox")) continue;
         size_t dyn_slot;
         if (!dict_find(b, d, kDyn, &t, &dd, &dyn_slot) || t != T_DICT) continue;
-        if (!dict_find(b, dd, kDrop, &t, &v, &slot) || t != T_STR || v >= st_count(b, st)) continue;
+        if (!dict_find(b, dd, kDrop, &t, &v, NULL) || t != T_STR || v >= st_count(b, st)) continue;
         snprintf(l.drop, sizeof l.drop, "%s", st_str(b, st, v));
-        l.slot = slot;
-        l.kdrop = kDrop;
-        l.kev = kEvent;
         l.dyn_slot = dyn_slot;
         l.dyn = dd;
         if (kEvent >= 0 && dict_find(b, dd, kEvent, &t, &v, NULL) && t == T_STR && v < st_count(b, st))
@@ -341,6 +343,7 @@ static int scan_scene(const Scene *S, int si, Loc **locs, int *n, int *cap) {
         if (!eligible(&l, kCheck >= 0 && dict_find(b, dd, kCheck, NULL, NULL, NULL))) continue;
         l.scene = si;
         snprintf(l.now, sizeof l.now, "%s", l.drop);
+        snprintf(l.now_ev, sizeof l.now_ev, "%s", l.event);
         if (*n == *cap) {
             *cap = *cap ? *cap * 2 : 512;
             *locs = (Loc *)realloc(*locs, (size_t)*cap * sizeof **locs);
@@ -351,29 +354,91 @@ static int scan_scene(const Scene *S, int si, Loc **locs, int *n, int *cap) {
     return added;
 }
 
-/* A scene's string slots changed: new names go to the end of the file in a rebuilt string table */
+static void w24(uint8_t *b, size_t o, uint32_t v) { b[o] = (uint8_t)v; b[o + 1] = (uint8_t)(v >> 8); b[o + 2] = (uint8_t)(v >> 16); }
+
+/* A changed chest: its drop or its event is not what the file has */
+static int loc_changed(const Loc *l) { return strcmp(l->now, l->drop) || strcmp(l->now_ev, l->event); }
+
+/* Key indexes at or above pos move up by one in every dictionary under a node (shared nodes once) */
+static void remap_keys(Buf *b, uint32_t off, uint8_t type, int pos, uint8_t *seen, int depth) {
+    if (depth > 64 || (type != T_DICT && type != T_ARR) || !in_bounds(b, off, 4) || seen[off]) return;
+    seen[off] = 1;
+    const uint32_t cnt = r24(b->d, off + 1);
+    if (type == T_DICT) {
+        if (!in_bounds(b, off, 4 + (size_t)cnt * 8)) return;
+        for (uint32_t i = 0; i < cnt; i++) {
+            const size_t e = off + 4 + (size_t)i * 8;
+            const uint32_t k = r24(b->d, e);
+            if ((int)k >= pos) w24(b->d, e, k + 1);
+            remap_keys(b, r32(b->d, e + 4), b->d[e + 3], pos, seen, depth + 1);
+        }
+    } else {
+        const uint32_t vals = (off + 4 + cnt + 3) & ~3u;
+        if (!in_bounds(b, off, (size_t)vals - off + (size_t)cnt * 4)) return;
+        for (uint32_t i = 0; i < cnt; i++) remap_keys(b, r32(b->d, vals + (size_t)i * 4), b->d[off + 4 + i], pos, seen, depth + 1);
+    }
+}
+
+/* The key table gets a name it lacks: the table is rebuilt at the end of the file with the name in its sorted place (the game
+   looks keys up in order), and the keys of every dictionary after it move up. Returns the key's index, or -1 */
+static int add_key(Buf *b, const char *name) {
+    const uint32_t kt = r32(b->d, 4), cnt = st_count(b, kt);
+    int pos = (int)cnt;
+    for (uint32_t i = 0; i < cnt; i++)
+        if (strcmp(st_str(b, kt, i), name) > 0) { pos = (int)i; break; }
+    const size_t hdr = 4 + ((size_t)cnt + 2) * 4, old_first = r32(b->d, kt + 4), old_chars = r32(b->d, kt + 4 + (size_t)cnt * 4) - old_first;
+    const size_t base = (b->n + 3) & ~(size_t)3, total = hdr + old_chars + strlen(name) + 1;
+    if (!buf_reserve(b, base + total + 8)) return -1;
+    uint8_t *o = b->d + base;
+    o[0] = 0xc2; w24(o, 1, cnt + 1);
+    size_t at = hdr;
+    for (uint32_t i = 0; i <= cnt; i++) {
+        const char *src = (int)i == pos ? name : st_str(b, kt, (int)i < pos ? i : i - 1);
+        w32(b->d, base + 4 + (size_t)i * 4, (uint32_t)at);
+        const size_t len = strlen(src) + 1;
+        memcpy(o + at, src, len);
+        at += len;
+    }
+    w32(b->d, base + 4 + ((size_t)cnt + 1) * 4, (uint32_t)at);
+    b->n = base + at;
+    w32(b->d, 4, (uint32_t)base);
+    uint8_t *seen = (uint8_t *)calloc(b->n + 1, 1);
+    if (!seen) return -1;
+    const uint32_t root = r32(b->d, 12);
+    remap_keys(b, root, b->d[root], pos, seen, 0);
+    free(seen);
+    return pos;
+}
+
+/* The index of a name in the string table, or one past it for a name added at the end (extra) */
+static int str_slot(const Buf *b, uint32_t st, uint32_t cnt, char (**extra)[96], int *extras, const char *name) {
+    int idx = st_find(b, st, name);
+    if (idx >= 0) return idx;
+    for (int j = 0; j < *extras; j++)
+        if (!strcmp((*extra)[j], name)) return (int)cnt + j;
+    *extra = (char (*)[96])realloc(*extra, (size_t)(*extras + 1) * sizeof **extra);
+    if (!*extra) return -1;
+    snprintf((*extra)[*extras], 96, "%s", name);
+    return (int)cnt + (*extras)++;
+}
+
+/* A scene's chests changed: new names go to the end of the file in a rebuilt string table; each changed chest gets a Dynamic
+   dictionary of its own (a copy at the end, with its drop and its event as they are now) */
 static int apply_scene(Scene *S, int si, Loc *locs, int n) {
     Buf *b = &S->b;
     uint32_t st = r32(b->d, 8);
     const uint32_t cnt = st_count(b, st);
-    char (*extra)[72] = NULL;
-    int extras = 0;
-    int changed = 0;
-    int *want = (int *)calloc((size_t)(n ? n : 1), sizeof *want);   /* a loc's new string index, -1 not yet */
+    char (*extra)[96] = NULL;
+    int extras = 0, changed = 0, need_event_key = 0;
+    int *want = (int *)calloc((size_t)(n ? n : 1), sizeof *want);     /* a loc's new drop string index, -1 not changed */
+    int *wantev = (int *)calloc((size_t)(n ? n : 1), sizeof *wantev); /* and its event's, -1 none */
+    if (!want || !wantev) { free(want); free(wantev); return -1; }
     for (int i = 0; i < n; i++) {
-        want[i] = -1;
-        if (locs[i].scene != si || !strcmp(locs[i].now, locs[i].drop)) continue;
-        int idx = st_find(b, st, locs[i].now);
-        if (idx < 0) {
-            for (int j = 0; j < extras; j++)
-                if (!strcmp(extra[j], locs[i].now)) idx = (int)cnt + j;
-            if (idx < 0) {
-                extra = (char (*)[72])realloc(extra, (size_t)(extras + 1) * sizeof *extra);
-                snprintf(extra[extras], 72, "%s", locs[i].now);
-                idx = (int)cnt + extras++;
-            }
-        }
-        want[i] = idx;
+        want[i] = wantev[i] = -1;
+        if (locs[i].scene != si || !loc_changed(&locs[i])) continue;
+        want[i] = str_slot(b, st, cnt, &extra, &extras, locs[i].now);
+        if (locs[i].now_ev[0]) { wantev[i] = str_slot(b, st, cnt, &extra, &extras, locs[i].now_ev); need_event_key = 1; }
+        if (want[i] < 0 || (locs[i].now_ev[0] && wantev[i] < 0)) { free(want); free(wantev); free(extra); return -1; }
         changed++;
     }
     if (extras) {
@@ -382,9 +447,9 @@ static int apply_scene(Scene *S, int si, Loc *locs, int n) {
         size_t extra_bytes = 0;
         for (int j = 0; j < extras; j++) extra_bytes += strlen(extra[j]) + 1;
         const size_t base = (b->n + 3) & ~(size_t)3, total = hdr + old_chars + extra_bytes;
-        if (!buf_reserve(b, base + total + 8)) { free(want); free(extra); return -1; }
+        if (!buf_reserve(b, base + total + 8)) { free(want); free(wantev); free(extra); return -1; }
         uint8_t *o = b->d + base;
-        o[0] = 0xc2; o[1] = (uint8_t)(cnt + extras); o[2] = (uint8_t)((cnt + extras) >> 8); o[3] = (uint8_t)((cnt + extras) >> 16);
+        o[0] = 0xc2; w24(o, 1, cnt + extras);
         for (uint32_t i = 0; i <= cnt; i++)
             w32(b->d, base + 4 + (size_t)i * 4, (uint32_t)(hdr + (r32(b->d, st + 4 + (size_t)i * 4) - old_first)));
         memcpy(o + hdr, b->d + st + old_first, old_chars);
@@ -399,28 +464,42 @@ static int apply_scene(Scene *S, int si, Loc *locs, int n) {
         w32(b->d, 8, (uint32_t)base);
         b->n = base + total;
     }
+    int kev = st_find(b, r32(b->d, 4), "GetEventName");
+    if (need_event_key && kev < 0 && (kev = add_key(b, "GetEventName")) < 0) { free(want); free(wantev); free(extra); return -1; }
+    const int kdrop = st_find(b, r32(b->d, 4), "Drop__DropActor");
     for (int i = 0; i < n; i++) {
         if (want[i] < 0) continue;
-        /* the chest gets a Dynamic dictionary of its own (a copy at the end): the file may share one between actors, and a
-           change in a shared one would change every actor that uses it */
         const uint32_t ne = r24(b->d, locs[i].dyn + 1);
-        const size_t len = 4 + (size_t)ne * 8, at = (b->n + 3) & ~(size_t)3;
-        if (!buf_reserve(b, at + len + 8)) { free(want); free(extra); return -1; }
+        const size_t at = (b->n + 3) & ~(size_t)3;
+        if (!buf_reserve(b, at + 4 + (size_t)(ne + 1) * 8 + 8)) { free(want); free(wantev); free(extra); return -1; }
+        /* the entries but the event, the drop's value new; the event's entry at its sorted place (keys rise down a dictionary) */
         uint32_t kept = 0;
-        for (uint32_t e = 0; e < ne; e++) {
-            const size_t from = locs[i].dyn + 4 + (size_t)e * 8;
-            const int key = (int)r24(b->d, from);
-            if (locs[i].strip && locs[i].kev >= 0 && key == locs[i].kev) continue;   /* (the event goes) */
-            memcpy(b->d + at + 4 + (size_t)kept * 8, b->d + from, 8);
-            if (key == locs[i].kdrop) w32(b->d, at + 4 + (size_t)kept * 8 + 4, (uint32_t)want[i]);
-            kept++;
+        int put = wantev[i] < 0;
+        for (uint32_t e = 0; e <= ne; e++) {
+            if (e < ne) {
+                const size_t from = locs[i].dyn + 4 + (size_t)e * 8;
+                const int key = (int)r24(b->d, from);
+                if (key == kev) continue;   /* (the old event goes) */
+                if (!put && key > kev) {
+                    const size_t to = at + 4 + (size_t)kept++ * 8;
+                    w24(b->d, to, (uint32_t)kev); b->d[to + 3] = T_STR; w32(b->d, to + 4, (uint32_t)wantev[i]);
+                    put = 1;
+                }
+                const size_t to = at + 4 + (size_t)kept++ * 8;
+                memcpy(b->d + to, b->d + from, 8);
+                if (key == kdrop) w32(b->d, to + 4, (uint32_t)want[i]);
+            } else if (!put) {
+                const size_t to = at + 4 + (size_t)kept++ * 8;
+                w24(b->d, to, (uint32_t)kev); b->d[to + 3] = T_STR; w32(b->d, to + 4, (uint32_t)wantev[i]);
+                put = 1;
+            }
         }
-        b->d[at] = b->d[locs[i].dyn];
-        b->d[at + 1] = (uint8_t)kept; b->d[at + 2] = (uint8_t)(kept >> 8); b->d[at + 3] = (uint8_t)(kept >> 16);
+        b->d[at] = T_DICT; w24(b->d, at + 1, kept);
         b->n = at + 4 + (size_t)kept * 8;
         w32(b->d, locs[i].dyn_slot, (uint32_t)at);
     }
     free(want);
+    free(wantev);
     free(extra);
     return changed;
 }
@@ -442,12 +521,16 @@ static int dungeon_listed(const Scene *sc) {
     return 0;
 }
 
-/* The items (strings) shuffled among the places, one each: items and places have the same count */
-static void deal(Loc *locs, const int *places, const char **items, int n) {
-    for (int i = n - 1; i > 0; i--) { const int j = (int)below((uint32_t)i + 1); const char *t = items[i]; items[i] = items[j]; items[j] = t; }
+/* The items shuffled among the places, one each: items (the chests they are in now) and places have the same count. An item
+   keeps the event that goes with it */
+static void deal(Loc *locs, const int *places, int *items, int n) {
+    for (int i = n - 1; i > 0; i--) { const int j = (int)below((uint32_t)i + 1); const int t = items[i]; items[i] = items[j]; items[j] = t; }
     for (int i = 0; i < n; i++) {
-        snprintf(locs[places[i]].now, sizeof locs[places[i]].now, "%s", items[i]);
-        locs[places[i]].placed = 1;
+        Loc *to = &locs[places[i]];
+        const Loc *from = &locs[items[i]];
+        snprintf(to->now, sizeof to->now, "%s", from->drop);
+        snprintf(to->now_ev, sizeof to->now_ev, "%s", from->carry);
+        to->placed = 1;
     }
 }
 
@@ -455,13 +538,14 @@ static void deal(Loc *locs, const int *places, const char **items, int n) {
    have taken theirs. A dungeon item that stays vanilla is in neither list. */
 static void shuffle_pool(Loc *locs, int nl, const Scene *sc, const char *scope, const RandoSettings *s, int di_mode) {
     int *places = (int *)malloc((size_t)(nl ? nl : 1) * sizeof *places);
-    const char **items = (const char **)malloc((size_t)(nl ? nl : 1) * sizeof *items);
+    int *items = (int *)malloc((size_t)(nl ? nl : 1) * sizeof *items);
     int np = 0, ni = 0;
     for (int i = 0; i < nl; i++) {
+        if (locs[i].leader != i) continue;   /* (a chest that is another file's copy follows its leader) */
         if (scope && strcmp(sc[locs[i].scene].scope, scope)) continue;
         const int di = is_dungeon_item(locs[i].drop), listed = dungeon_listed(&sc[locs[i].scene]);
         if (!locs[i].placed && !(s->dungeon_items == 0 && di)) places[np++] = i;
-        if (!di || di_mode == 2 || (di_mode == 1 && !listed)) items[ni++] = locs[i].drop;
+        if (!di || di_mode == 2 || (di_mode == 1 && !listed)) items[ni++] = i;
     }
     if (np == ni && np > 0) deal(locs, places, items, np);   /* (a count that differs would lose an item: leave the pool alone) */
     free(places);
@@ -474,12 +558,12 @@ static void shuffle_all(Loc *locs, int nl, const Scene *sc, int nsc, const Rando
     if (di_mode == 1) {   /* the dungeon items go to random chests of their own dungeon (both its scenes' chests) */
         for (int d = 0; kDungeons[d]; d++) {
             int *slots = (int *)malloc((size_t)(nl ? nl : 1) * sizeof *slots);
-            const char **items = (const char **)malloc((size_t)(nl ? nl : 1) * sizeof *items);
+            int *items = (int *)malloc((size_t)(nl ? nl : 1) * sizeof *items);
             int ns = 0, ni = 0;
             for (int i = 0; i < nl; i++) {
-                if (strcmp(sc[locs[i].scene].dir, kDungeons[d])) continue;
+                if (locs[i].leader != i || strcmp(sc[locs[i].scene].dir, kDungeons[d])) continue;
                 slots[ns++] = i;
-                if (is_dungeon_item(locs[i].drop)) items[ni++] = locs[i].drop;
+                if (is_dungeon_item(locs[i].drop)) items[ni++] = i;
             }
             for (int i = ns - 1; i > 0; i--) { const int j = (int)below((uint32_t)i + 1), t = slots[i]; slots[i] = slots[j]; slots[j] = t; }
             if (ni) deal(locs, slots, items, ni);   /* (the first ni of the shuffled places) */
@@ -495,6 +579,13 @@ static void shuffle_all(Loc *locs, int nl, const Scene *sc, int nsc, const Rando
             for (int b = 0; b < a; b++) if (!strcmp(sc[b].scope, sc[a].scope)) first = 0;
             if (first) shuffle_pool(locs, nl, sc, sc[a].scope, s, di_mode);
         }
+    }
+    for (int i = 0; i < nl; i++) {   /* a chest in the other age's file has what its leader has */
+        if (locs[i].leader == i) continue;
+        const Loc *l = &locs[locs[i].leader];
+        snprintf(locs[i].now, sizeof locs[i].now, "%s", l->now);
+        snprintf(locs[i].now_ev, sizeof locs[i].now_ev, "%s", l->now_ev);
+        locs[i].placed = l->placed;
     }
 }
 
@@ -553,6 +644,14 @@ int rando_generate(const char *romfs, const char *out_romfs, const char *spoiler
     free_list(dirs, ndirs);
     if (!nl) { fail(err, errn, "no chests found under", romfs); goto done; }
 
+    /* A chest is in both of a scene's age files (Child and Adult, same folder and hash): one place, one item. Only an exact copy
+       follows (same drop, same event) */
+    for (int i = 0; i < nl; i++) {
+        locs[i].leader = i;
+        for (int j = 0; j < i && locs[i].hash; j++)
+            if (locs[j].leader == j && locs[j].hash == locs[i].hash && !strcmp(sc[locs[j].scene].dir, sc[locs[i].scene].dir) &&
+                !strcmp(locs[j].drop, locs[i].drop) && !strcmp(locs[j].event, locs[i].event)) { locs[i].leader = j; break; }
+    }
     rng_state = (uint64_t)s->seed * 0x9e3779b97f4a7c15ull + 12345;
     if (s->chests) shuffle_all(locs, nl, sc, nsc, s);
 
@@ -563,7 +662,7 @@ int rando_generate(const char *romfs, const char *out_romfs, const char *spoiler
                     s->chests, s->dungeon_items, nl);
     for (int a = 0; a < nsc; a++) {
         int here = 0;
-        for (int i = 0; i < nl; i++) here += locs[i].scene == a && strcmp(locs[i].now, locs[i].drop) != 0;
+        for (int i = 0; i < nl; i++) here += locs[i].scene == a && loc_changed(&locs[i]);
         if (!here) continue;
         if (apply_scene(&sc[a], a, locs, nl) < 0) { fail(err, errn, "out of memory", NULL); if (sp) fclose(sp); goto done; }
         size_t zn = 0;
@@ -579,8 +678,11 @@ int rando_generate(const char *romfs, const char *out_romfs, const char *spoiler
     }
     if (sp) {
         for (int i = 0; i < nl; i++)
-            if (strcmp(locs[i].now, locs[i].drop))
+            if (loc_changed(&locs[i])) {
                 fprintf(sp, "%s  chest %llu: %s -> %s\n", sc[locs[i].scene].name, (unsigned long long)locs[i].hash, locs[i].drop, locs[i].now);
+                if (strcmp(locs[i].now_ev, locs[i].event))
+                    fprintf(sp, "    event: %s -> %s\n", locs[i].event[0] ? locs[i].event : "(none)", locs[i].now_ev[0] ? locs[i].now_ev : "(none)");
+            }
         fclose(sp);
     }
     result = changed;

@@ -131,6 +131,8 @@ def byml_read_actors(b):
     assert b[:2] == b"YB" and u16(2) == 7
     kt, st, root = u32(4), u32(8), u32(12)
     tstr = lambda t, i: b[t + u32(t + 4 + 4 * i):].split(b"\0", 1)[0].decode()
+    kn = [tstr(kt, i) for i in range(u24(kt + 1))]
+    assert kn == sorted(kn), "the key table is not in order"
     keys = {tstr(kt, i): i for i in range(u24(kt + 1))}
 
     def entries(d):
@@ -139,6 +141,7 @@ def byml_read_actors(b):
         for i in range(u24(d + 1)):
             e = d + 4 + 8 * i
             res[u24(e)] = (b[e + 3], u32(e + 4))
+        assert list(res) == sorted(res), "the keys of a dictionary are not in order"
         return res
 
     def value(t, v):
@@ -224,12 +227,18 @@ SCENES = {
         actor("Obj_TBox_A_01", 42, "TBox_Rupee_Green"),
         actor("Obj_TBox_A_01", 43, "Obj_Heart_Piece"),
         actor("Obj_TBox_A_01", 44, "TBox_Rupee_Purple"),
-        actor("Obj_TBox_A_01", 45, "Item_Sword_001", "Get_StoneOfForest_GetSword"),   # (an item's own event: stays, or a rupee would play the sword's scene)
-        actor("Obj_TBox_A_01", 46, "TBox_Rupee_Red", "KokiriForest_TreasureBox_NaviChatOff"),   # (moves, keeps its event)
+        actor("Obj_TBox_A_01", 45, "Item_Sword_001", "Get_StoneOfForest_GetSword"),   # (an item's own event: goes with the item)
+        actor("Obj_TBox_A_01", 46, "TBox_Rupee_Red", "KokiriForest_TreasureBox_NaviChatOff"),   # (Navi's chat switch: dropped when the item changes)
+    ],
+    "KokiriForest/KokiriForest_Adult_Dynamic": [   # (the same chests in the other age's file: one place each, so the same item and event)
+        actor("Obj_TBox_A_01", 41, "TBox_Rupee_Blue"),
+        actor("Obj_TBox_A_01", 45, "Item_Sword_001", "Get_StoneOfForest_GetSword"),
     ],
 }
 DUNGEONS = {"InsideTheDekuTree", "DodongoCavern", "InsideJabuJabuBelly"}
-STAYS = {17, 18, 45}
+STAYS = {17, 18}
+SWORD_EVENT = "Get_StoneOfForest_GetSword"
+CARRY = (SWORD_EVENT,)
 
 
 def make_romfs(root):
@@ -304,6 +313,7 @@ def main():
         check(not os.path.exists(os.path.join(out, "Banc")) or not read_out(out), "Shuffle chests Off wrote scenes")
 
         moved_ever = set()
+        sword_in_jabu = []   # (a scene whose key table lacks GetEventName: the key is added and the file still reads)
         for chests in (1, 2):
             for di in (0, 1, 2):
                 for seed in (1, 2, 3, 4, 5, 6):
@@ -311,25 +321,31 @@ def main():
                     run(chests, di, seed, out)
                     got = read_out(out)
                     tag = "chests %d, dungeon items %d, seed %d" % (chests, di, seed)
+                    lead = {rel: acts for rel, acts in before.items() if "_Adult_" not in rel}
                     items_b, items_a = collections.Counter(), collections.Counter()
+                    pair = {rel: {a[1]: a for a in (got[rel][1] if rel in got else before[rel])} for rel in before if rel.startswith("KokiriForest/")}
+                    for h, a in pair["KokiriForest/KokiriForest_Adult_Dynamic"].items():
+                        c = pair["KokiriForest/KokiriForest_Child_Dynamic"][h]
+                        check(a[2:] == c[2:], "%s: the chest %s of the two age files differs (%s, %s)" % (tag, h, a[2:], c[2:]))
                     now = {}   # hash -> (scene, item)
                     for rel, acts in before.items():
                         new = got[rel][1] if rel in got else acts
                         check(len(new) == len(acts), "%s: %s has another number of actors" % (tag, rel))
                         for a, b in zip(acts, new):
                             check(a[:2] == b[:2], "%s: %s: an actor's name or hash changed" % (tag, rel))
-                            gone = a[2] != b[2] and (a[3] or "").endswith(("_GetMap", "_GetCompass", "_GetBossKey", "_GetSmallKey", "_GetSlingShot"))
-                            check(b[3] == (None if gone else a[3]), "%s: %s: actor %s: event %s became %s (an item's get-item event goes with the item, the others stay)" % (tag, rel, a[1], a[3], b[3]))
+                            same = a[2] == b[2] and a[3] == b[3]
+                            check(same or b[3] is None or b[3] in CARRY, "%s: %s: actor %s: event %s became %s (only an item's own event is put on a chest)" % (tag, rel, a[1], a[3], b[3]))
+                            check((b[2] == "Item_Sword_001") == (b[3] == SWORD_EVENT), "%s: %s: actor %s holds %s with event %s (an item and its own event go together)" % (tag, rel, a[1], b[2], b[3]))
                             if a[2] != b[2]:
                                 check(a[0].startswith("Obj_TBox") and a[1] not in STAYS, "%s: %s: actor %s changed and is no chest to shuffle" % (tag, rel, a[1]))
                                 moved_ever.add(a[1])
-                            if a[0].startswith("Obj_TBox") and a[1] not in STAYS:
+                            if a[0].startswith("Obj_TBox") and a[1] not in STAYS and "_Adult_" not in rel:   # (an Adult file's chest is its Child file's)
                                 items_b[a[2]] += 1
                                 items_a[b[2]] += 1
                                 now[a[1]] = (rel, b[2])
                     check(items_b == items_a, "%s: the chests hold other items than before" % tag)
                     scope = lambda rel: re.sub(r"_(Static|Dynamic)$", "", rel.split("/")[1])
-                    for rel, acts in before.items():
+                    for rel, acts in lead.items():
                         for a in acts:
                             if not a[0].startswith("Obj_TBox") or a[1] in STAYS or a[2] is None:
                                 continue
@@ -341,13 +357,13 @@ def main():
                             check(rel.split("/")[0] in DUNGEONS, "%s: a dungeon item (%s) left the dungeons" % (tag, item))
                     if di == 1 or (chests == 1 and di == 2):   # (Own dungeon: each dungeon keeps its own dungeon items)
                         for d in DUNGEONS:
-                            was = collections.Counter(a[2] for rel, acts in before.items() if rel.startswith(d + "/") for a in acts
+                            was = collections.Counter(a[2] for rel, acts in lead.items() if rel.startswith(d + "/") for a in acts
                                                       if a[0].startswith("Obj_TBox") and a[1] not in STAYS and (a[2] or "").startswith("Item_Dungeon_"))
                             have = collections.Counter(it for h, (rel, it) in now.items() if rel.startswith(d + "/") and it.startswith("Item_Dungeon_"))
                             check(was == have, "%s: %s's dungeon items are not its own after (%s, then %s)" % (tag, d, dict(was), dict(have)))
                     if chests == 1:   # (a scene's items stay in its chests)
-                        for sc in {scope(r) for r in before}:
-                            was = collections.Counter(a[2] for rel, acts in before.items() if scope(rel) == sc for a in acts
+                        for sc in {scope(r) for r in lead}:
+                            was = collections.Counter(a[2] for rel, acts in lead.items() if scope(rel) == sc for a in acts
                                                       if a[0].startswith("Obj_TBox") and a[1] not in STAYS and not (di == 0 and (a[2] or "").startswith("Item_Dungeon_")) or False)
                             have = collections.Counter(it for h, (rel, it) in now.items() if scope(rel) == sc and not (di == 0 and it.startswith("Item_Dungeon_")))
                             check(was == have, "%s: scene %s's items changed (%s, then %s)" % (tag, sc, dict(was), dict(have)))
@@ -355,6 +371,15 @@ def main():
                     if "InsideTheDekuTree/InsideTheDekuTree_Static" in got:
                         pot = [a for a in got["InsideTheDekuTree/InsideTheDekuTree_Static"][1] if a[1] == 15][0]
                         check(pot[2] == "TBox_Rupee_Red", "%s: the pot that shares a chest's dictionary changed" % tag)
+        for seed in range(10, 400):   # (more seeds, for one that puts the sword where the key table lacks the key: Jabu has two chests of some thirty)
+            out = os.path.join(tmp, "sweep")
+            run(2, 2, seed, out)
+            got = read_out(out)
+            jabu = got.get("InsideJabuJabuBelly/InsideJabuJabuBelly_Static")
+            if jabu and any(a[2] == "Item_Sword_001" and a[3] == SWORD_EVENT for a in jabu[1]):
+                sword_in_jabu.append(seed)
+                break
+        check(sword_in_jabu, "no seed put the sword (with its event) in a scene whose key table lacks GetEventName")
         check(moved_ever >= {13, 14, 41, 42}, "no seed moved the chests that share a dictionary / a scene without dungeon items")
 
         # the same seed twice gives the same bytes; 0 is a new seed, returned
