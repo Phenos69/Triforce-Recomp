@@ -529,6 +529,21 @@ static int dungeon_listed(const Scene *sc) {
     return 0;
 }
 
+/* the chest actor "place" becomes when it holds the item that "origin" (a chest actor) held */
+static const char *chest_for(const char *place, const char *origin) {
+    static char out[72];
+    const char *cls = starts_with(origin, "Obj_TBox_A_02") ? "A_02" : starts_with(origin, "Obj_TBox_A_03") ? "A_03" : "A_01";
+    int ok = 0;
+    for (const char *k = "1236"; *k; k++) {
+        char base[32];
+        snprintf(base, sizeof base, "Obj_TBox_A_0%c", *k);
+        if (starts_with(place, base) && (!place[strlen(base)] || !strcmp(place + strlen(base), "_NoBake"))) ok = 1;
+    }
+    if (!ok) return place;
+    snprintf(out, sizeof out, "Obj_TBox_%s%s", cls, ends_with(place, "_NoBake") ? "_NoBake" : "");
+    return out;
+}
+
 /* The items shuffled among the places, one each: items (the chests they are in now) and places have the same count. An item
    keeps the event that goes with it */
 static void deal(Loc *locs, const int *places, int *items, int n) {
@@ -538,11 +553,11 @@ static void deal(Loc *locs, const int *places, int *items, int n) {
         const Loc *from = &locs[items[i]];
         snprintf(to->now, sizeof to->now, "%s", from->drop);
         snprintf(to->now_ev, sizeof to->now_ev, "%s", from->carry);
-        /* An item's own scene (the swords, the Bow, the Hammer...) is the big chest's: Link's pose and the opening of Dm_SY_Treasurebox.
-           A small chest that gets one becomes a big chest (its actor name), so the scene fits whichever chest holds the item */
-        snprintf(to->now_gy, sizeof to->now_gy, "%s", to->gyaml);
-        if (from->carry[0] && !strcmp(to->gyaml, "Obj_TBox_A_01")) snprintf(to->now_gy, sizeof to->now_gy, "Obj_TBox_A_02");
-        else if (from->carry[0] && !strcmp(to->gyaml, "Obj_TBox_A_01_NoBake")) snprintf(to->now_gy, sizeof to->now_gy, "Obj_TBox_A_02_NoBake");
+        /* A chest's size goes with its item: an item that is in a big chest in the game (a compass, a map, a boss key, the sword...)
+           makes the chest it goes to a big one, an item of a small chest a small one (the actor's name: A_01 small, A_02 big,
+           A_03 the boss key's). The lighting variant (_NoBake) and chests of another kind (the Lens of Truth's hidden one,
+           heart pieces' memo chests) stay as they are */
+        snprintf(to->now_gy, sizeof to->now_gy, "%s", chest_for(to->gyaml, from->gyaml));
         to->placed = 1;
     }
 }

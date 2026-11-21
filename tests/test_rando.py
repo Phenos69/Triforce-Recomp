@@ -401,14 +401,10 @@ def main():
                         new = got[rel][1] if rel in got else acts
                         check(len(new) == len(acts), "%s: %s has another number of actors" % (tag, rel))
                         for a, b in zip(acts, new):
-                            check(a[1] == b[1] and (a[0] == b[0] or (a[0].startswith("Obj_TBox_A_01") and b[0] == a[0].replace("A_01", "A_02"))),
+                            check(a[1] == b[1] and (a[0] == b[0] or (a[0].startswith("Obj_TBox_A_0") and b[0].startswith("Obj_TBox_A_0") and a[0][13:] == b[0][13:])),
                                   "%s: %s: an actor's name or hash changed (%s, %s)" % (tag, rel, a[0], b[0]))
                             same = a[2] == b[2] and a[3] == b[3]
                             check(same or b[3] is None or b[3] in CARRY, "%s: %s: actor %s: event %s became %s (only an item's own event is put on a chest)" % (tag, rel, a[1], a[3], b[3]))
-                            if b[3] in CARRY:   # (an item's own scene is the big chest's: a small chest that holds it is a big one)
-                                check(b[0].startswith("Obj_TBox_A_02"), "%s: %s: actor %s: a scene in a small chest (%s)" % (tag, rel, a[1], b[0]))
-                            elif a[0] != b[0]:
-                                check(False, "%s: %s: actor %s became %s without an item's scene" % (tag, rel, a[1], b[0]))
                             check((b[2] == "Item_Sword_001") == (b[3] == SWORD_EVENT), "%s: %s: actor %s holds %s with event %s (an item and its own event go together)" % (tag, rel, a[1], b[2], b[3]))
                             if a[2] != b[2]:
                                 check(a[0].startswith("Obj_TBox") and a[1] not in STAYS, "%s: %s: actor %s changed and is no chest to shuffle" % (tag, rel, a[1]))
@@ -418,6 +414,19 @@ def main():
                                 items_a[b[2]] += 1
                                 now[a[1]] = (rel, b[2])
                     check(items_b == items_a, "%s: the chests hold other items than before" % tag)
+                    # a chest's size goes with its item: the actor's class (A_02 big, A_03 boss key, else small) is the one of the chests the item came from
+                    cls_of = lambda n: n[12] if n[12] in "23" else "1"
+                    origin = collections.defaultdict(set)
+                    for rel, acts in before.items():
+                        for a in acts:
+                            if a[0].startswith("Obj_TBox_A_0") and a[1] not in STAYS and a[2] and "_Adult_" not in rel:
+                                origin[a[2]].add(cls_of(a[0]))
+                    for rel in before:
+                        if "_Adult_" in rel:
+                            continue
+                        for a, b in zip(before[rel], got[rel][1] if rel in got else before[rel]):
+                            if b[0].startswith("Obj_TBox_A_0") and b[0][12] in "1236" and a[1] not in STAYS and b[2] in origin and len(origin[b[2]]) == 1:
+                                check(cls_of(b[0]) in origin[b[2]], "%s: %s: actor %s holds %s in a %s chest (it came from %s)" % (tag, rel, a[1], b[2], b[0], origin[b[2]]))
                     scope = lambda rel: re.sub(r"_(Static|Dynamic)$", "", rel.split("/")[1])
                     for rel, acts in lead.items():
                         for a in acts:
