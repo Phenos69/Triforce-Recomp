@@ -262,6 +262,8 @@ typedef struct {
     char carry[96];  /* the event that goes with this chest's item when it is moved (empty: none goes) */
     char now[72];    /* what it gives after the shuffle */
     char now_ev[96]; /* and the event it has after it */
+    size_t gy_slot;  /* where the actor's Gyaml string index is */
+    char now_gy[72]; /* and the chest it is after: a small chest that gets an item's own scene becomes a big one */
     int placed;
     int leader;      /* the same chest in the scene's other age file (same folder and hash): this index, else itself */
 } Loc;
@@ -328,8 +330,9 @@ static int scan_scene(const Scene *S, int si, Loc **locs, int *n, int *cap) {
         d = r32(b->d, vals + (size_t)i * 4);
         Loc l;
         memset(&l, 0, sizeof l);
-        if (!dict_find(b, d, kGyaml, &t, &v, NULL) || t != T_STR || v >= st_count(b, st)) continue;
+        if (!dict_find(b, d, kGyaml, &t, &v, &l.gy_slot) || t != T_STR || v >= st_count(b, st)) continue;
         snprintf(l.gyaml, sizeof l.gyaml, "%s", st_str(b, st, v));
+        snprintf(l.now_gy, sizeof l.now_gy, "%s", l.gyaml);
         if (!starts_with(l.gyaml, "Obj_TBox")) continue;
         size_t dyn_slot;
         if (!dict_find(b, d, kDyn, &t, &dd, &dyn_slot) || t != T_DICT) continue;
@@ -358,7 +361,7 @@ static int scan_scene(const Scene *S, int si, Loc **locs, int *n, int *cap) {
 static void w24(uint8_t *b, size_t o, uint32_t v) { b[o] = (uint8_t)v; b[o + 1] = (uint8_t)(v >> 8); b[o + 2] = (uint8_t)(v >> 16); }
 
 /* A changed chest: its drop or its event is not what the file has */
-static int loc_changed(const Loc *l) { return strcmp(l->now, l->drop) || strcmp(l->now_ev, l->event); }
+static int loc_changed(const Loc *l) { return strcmp(l->now, l->drop) || strcmp(l->now_ev, l->event) || strcmp(l->now_gy, l->gyaml); }
 
 /* Key indexes at or above pos move up by one in every dictionary under a node (shared nodes once) */
 static void remap_keys(Buf *b, uint32_t off, uint8_t type, int pos, uint8_t *seen, int depth) {
@@ -433,13 +436,15 @@ static int apply_scene(Scene *S, int si, Loc *locs, int n) {
     int extras = 0, changed = 0, need_event_key = 0;
     int *want = (int *)calloc((size_t)(n ? n : 1), sizeof *want);     /* a loc's new drop string index, -1 not changed */
     int *wantev = (int *)calloc((size_t)(n ? n : 1), sizeof *wantev); /* and its event's, -1 none */
-    if (!want || !wantev) { free(want); free(wantev); return -1; }
+    int *wantgy = (int *)calloc((size_t)(n ? n : 1), sizeof *wantgy); /* and its chest's (the actor's Gyaml), -1 not changed */
+    if (!want || !wantev || !wantgy) { free(want); free(wantev); free(wantgy); return -1; }
     for (int i = 0; i < n; i++) {
-        want[i] = wantev[i] = -1;
+        want[i] = wantev[i] = wantgy[i] = -1;
         if (locs[i].scene != si || !loc_changed(&locs[i])) continue;
         want[i] = str_slot(b, st, cnt, &extra, &extras, locs[i].now);
         if (locs[i].now_ev[0]) { wantev[i] = str_slot(b, st, cnt, &extra, &extras, locs[i].now_ev); need_event_key = 1; }
-        if (want[i] < 0 || (locs[i].now_ev[0] && wantev[i] < 0)) { free(want); free(wantev); free(extra); return -1; }
+        if (strcmp(locs[i].now_gy, locs[i].gyaml)) wantgy[i] = str_slot(b, st, cnt, &extra, &extras, locs[i].now_gy);
+        if (want[i] < 0 || (locs[i].now_ev[0] && wantev[i] < 0) || (strcmp(locs[i].now_gy, locs[i].gyaml) && wantgy[i] < 0)) { free(want); free(wantev); free(wantgy); free(extra); return -1; }
         changed++;
     }
     if (extras) {
@@ -498,9 +503,11 @@ static int apply_scene(Scene *S, int si, Loc *locs, int n) {
         b->d[at] = T_DICT; w24(b->d, at + 1, kept);
         b->n = at + 4 + (size_t)kept * 8;
         w32(b->d, locs[i].dyn_slot, (uint32_t)at);
+        if (wantgy[i] >= 0) w32(b->d, locs[i].gy_slot, (uint32_t)wantgy[i]);
     }
     free(want);
     free(wantev);
+    free(wantgy);
     free(extra);
     return changed;
 }
@@ -522,31 +529,20 @@ static int dungeon_listed(const Scene *sc) {
     return 0;
 }
 
-static int big_chest(const Loc *l) { return starts_with(l->gyaml, "Obj_TBox_A_02"); }
-
 /* The items shuffled among the places, one each: items (the chests they are in now) and places have the same count. An item
    keeps the event that goes with it */
 static void deal(Loc *locs, const int *places, int *items, int n) {
     for (int i = n - 1; i > 0; i--) { const int j = (int)below((uint32_t)i + 1); const int t = items[i]; items[i] = items[j]; items[j] = t; }
-    /* An item's own scene (the swords, the Bow, the Hammer...) is the big chest's: it plays the big chest's opening and Link's pose
-       for it (Dm_SY_Treasurebox), which is wrong on a small chest. Such an item goes to a big chest (Obj_TBox_A_02, where these
-       scenes are in the game); if the pool has none it goes back to the chest it came from */
-    for (int i = 0; i < n; i++) {
-        if (!locs[items[i]].carry[0] || big_chest(&locs[places[i]])) continue;
-        int j = -1;
-        for (int k = 0, at = (int)below((uint32_t)n); k < n && j < 0; k++) {
-            const int c = (at + k) % n;
-            if (big_chest(&locs[places[c]]) && !locs[items[c]].carry[0]) j = c;
-        }
-        for (int k = 0; k < n && j < 0; k++)
-            if (places[k] == items[i]) j = k;   /* (its own chest) */
-        if (j >= 0) { const int t = items[i]; items[i] = items[j]; items[j] = t; }
-    }
     for (int i = 0; i < n; i++) {
         Loc *to = &locs[places[i]];
         const Loc *from = &locs[items[i]];
         snprintf(to->now, sizeof to->now, "%s", from->drop);
         snprintf(to->now_ev, sizeof to->now_ev, "%s", from->carry);
+        /* An item's own scene (the swords, the Bow, the Hammer...) is the big chest's: Link's pose and the opening of Dm_SY_Treasurebox.
+           A small chest that gets one becomes a big chest (its actor name), so the scene fits whichever chest holds the item */
+        snprintf(to->now_gy, sizeof to->now_gy, "%s", to->gyaml);
+        if (from->carry[0] && !strcmp(to->gyaml, "Obj_TBox_A_01")) snprintf(to->now_gy, sizeof to->now_gy, "Obj_TBox_A_02");
+        else if (from->carry[0] && !strcmp(to->gyaml, "Obj_TBox_A_01_NoBake")) snprintf(to->now_gy, sizeof to->now_gy, "Obj_TBox_A_02_NoBake");
         to->placed = 1;
     }
 }
@@ -602,6 +598,7 @@ static void shuffle_all(Loc *locs, int nl, const Scene *sc, int nsc, const Rando
         const Loc *l = &locs[locs[i].leader];
         snprintf(locs[i].now, sizeof locs[i].now, "%s", l->now);
         snprintf(locs[i].now_ev, sizeof locs[i].now_ev, "%s", l->now_ev);
+        snprintf(locs[i].now_gy, sizeof locs[i].now_gy, "%s", l->now_gy);
         locs[i].placed = l->placed;
     }
 }
@@ -859,6 +856,7 @@ int rando_generate(const char *romfs, const char *out_romfs, const char *spoiler
             for (int i = 0; i < nl; i++) {
                 snprintf(locs[i].now, sizeof locs[i].now, "%s", locs[i].drop);
                 snprintf(locs[i].now_ev, sizeof locs[i].now_ev, "%s", locs[i].event);
+                snprintf(locs[i].now_gy, sizeof locs[i].now_gy, "%s", locs[i].gyaml);
                 locs[i].placed = 0;
             }
         }
